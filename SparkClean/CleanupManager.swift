@@ -31,6 +31,7 @@ class CleanupManager {
     var lastScanSummary: ScanSummary?
     var searchQuery = ""
     var scanErrors: [String] = []
+    var hasFullDiskAccess: Bool = true
     private let cancelLock = OSAllocatedUnfairLock(initialState: false)
     private var scanStartTime: Date?
     private let scannedPathsLock = OSAllocatedUnfairLock(initialState: Set<String>())
@@ -126,6 +127,64 @@ class CleanupManager {
     private var settingPreferTrash: Bool {
         UserDefaults.standard.object(forKey: "preferTrash") as? Bool ?? true
     }
+    private var settingScanLargeFiles: Bool {
+        UserDefaults.standard.object(forKey: "scanLargeFiles") as? Bool ?? true
+    }
+    private var settingLargeFileScanDirs: [String] {
+        var dirs: [String] = []
+        if UserDefaults.standard.object(forKey: "largeFileScanDownloads") as? Bool ?? true { dirs.append("\(Self.home)/Downloads") }
+        if UserDefaults.standard.object(forKey: "largeFileScanDesktop") as? Bool ?? true { dirs.append("\(Self.home)/Desktop") }
+        if UserDefaults.standard.object(forKey: "largeFileScanDocuments") as? Bool ?? true { dirs.append("\(Self.home)/Documents") }
+        if UserDefaults.standard.object(forKey: "largeFileScanMovies") as? Bool ?? true { dirs.append("\(Self.home)/Movies") }
+        if UserDefaults.standard.object(forKey: "largeFileScanMusic") as? Bool ?? true { dirs.append("\(Self.home)/Music") }
+        if UserDefaults.standard.object(forKey: "largeFileScanPictures") as? Bool ?? true { dirs.append("\(Self.home)/Pictures") }
+        return dirs
+    }
+    private var settingLargeFileIncludeVideos: Bool {
+        UserDefaults.standard.object(forKey: "largeFileIncludeVideos") as? Bool ?? true
+    }
+    private var settingLargeFileIncludeImages: Bool {
+        UserDefaults.standard.object(forKey: "largeFileIncludeImages") as? Bool ?? true
+    }
+    private var settingLargeFileIncludeArchives: Bool {
+        UserDefaults.standard.object(forKey: "largeFileIncludeArchives") as? Bool ?? true
+    }
+    private var settingLargeFileIncludeInstallers: Bool {
+        UserDefaults.standard.object(forKey: "largeFileIncludeInstallers") as? Bool ?? true
+    }
+    private var settingLargeFileIncludeAudio: Bool {
+        UserDefaults.standard.object(forKey: "largeFileIncludeAudio") as? Bool ?? true
+    }
+    private var settingLargeFileIncludeOther: Bool {
+        UserDefaults.standard.object(forKey: "largeFileIncludeOther") as? Bool ?? true
+    }
+    private var settingLargeFileMaxAgeDays: Int {
+        UserDefaults.standard.integer(forKey: "largeFileMaxAgeDays")
+    }
+    private var settingLargeFileMaxResults: Int {
+        let v = UserDefaults.standard.integer(forKey: "largeFileMaxResults")
+        return v > 0 ? v : 100
+    }
+    private var settingScanVirtualEnvironments: Bool {
+        UserDefaults.standard.object(forKey: "scanVirtualEnvironments") as? Bool ?? true
+    }
+    private var settingScreenRecordingThresholdDays: Int {
+        let v = UserDefaults.standard.integer(forKey: "screenRecordingThresholdDays")
+        return v > 0 ? v : 60
+    }
+    private var settingScanIOSBackups: Bool {
+        UserDefaults.standard.object(forKey: "scanIOSBackups") as? Bool ?? true
+    }
+    private var settingScanIMessageAttachments: Bool {
+        UserDefaults.standard.object(forKey: "scanIMessageAttachments") as? Bool ?? true
+    }
+    private var settingScanBrokenSymlinks: Bool {
+        UserDefaults.standard.object(forKey: "scanBrokenSymlinks") as? Bool ?? true
+    }
+    private var settingScanScreenRecordings: Bool {
+        UserDefaults.standard.object(forKey: "scanScreenRecordings") as? Bool ?? true
+    }
+
 
     // MARK: - Scan Definitions
     //
@@ -449,6 +508,15 @@ class CleanupManager {
              "\(home)/Library/Caches/com.microsoft.Powerpoint",
              "\(home)/Library/Caches/com.microsoft.Outlook"]
         },
+
+        ScanDefinition(
+            name: "Quick Look Cache", icon: "eye.square", color: .gray,
+            description: "Thumbnail previews — rebuilds automatically",
+            group: .system, safetyLevel: .safe
+        ) {
+            ["\(home)/Library/Caches/com.apple.QuickLook.thumbnailcache",
+             "\(home)/Library/Caches/com.apple.QuickLookThumbnailing"]
+        },
     ]
 
     // MARK: - Disk Usage
@@ -487,10 +555,18 @@ class CleanupManager {
         resetScannedPaths()
 
         fetchDiskUsage()
+        checkFullDiskAccess()
 
         let scanDocker = settingScanDocker
         let scanNodeModules = settingScanNodeModules
         let scanUnusedApps = settingScanUnusedApps
+        let scanIOSBackups = settingScanIOSBackups
+        let scanIMessage = settingScanIMessageAttachments
+        let scanBrokenSymlinks = settingScanBrokenSymlinks
+        let scanScreenRecordings = settingScanScreenRecordings
+        let scanVenvs = settingScanVirtualEnvironments
+        let scanLargeFiles = settingScanLargeFiles
+        let estimatedSmartScans = 5 + (scanDocker ? 3 : 0) + (scanUnusedApps ? 1 : 0) + (scanNodeModules ? 1 : 0) + 2 + 1 + (scanIOSBackups ? 1 : 0) + (scanIMessage ? 1 : 0) + (scanBrokenSymlinks ? 1 : 0) + (scanScreenRecordings ? 1 : 0) + (scanVenvs ? 1 : 0) + (scanLargeFiles ? 1 : 0)
 
         // Phase 1: Specific known-safe targets
         // First pass: collect all paths so we can detect parent-child overlaps
@@ -556,7 +632,7 @@ class CleanupManager {
             }
 
             await MainActor.run {
-                scanProgress = Double(index + 1) / Double(totalDefs + 12)
+                scanProgress = Double(index + 1) / Double(totalDefs + estimatedSmartScans)
             }
         }
 
@@ -576,6 +652,9 @@ class CleanupManager {
             smartScans.append(("Scanning Docker containers...",  { await self.scanDockerStoppedContainers() }))
             smartScans.append(("Scanning Docker build cache...", { await self.scanDockerBuildCache() }))
         }
+        // Ollama models (always scan if installed — fast CLI call)
+        smartScans.append(("Scanning Ollama models...",     { await self.scanOllamaModels() }))
+
         if scanUnusedApps {
             smartScans.append(("Scanning unused apps...",        { await self.scanUnusedApplications() }))
         }
@@ -586,6 +665,31 @@ class CleanupManager {
         // Always scan these
         smartScans.append(("Scanning mail attachments...",   { await self.scanMailAttachments() }))
         smartScans.append(("Scanning app leftovers...",      { await self.scanOrphanedAppData() }))
+
+        // Conditionally enabled scans
+        smartScans.append(("Scanning iOS software updates...", { await self.scanIPSWFiles() }))  // Always scan (small/fast)
+        if scanIOSBackups {
+            smartScans.append(("Scanning iOS backups...",        { await self.scanIOSBackups() }))
+        }
+        if scanIMessage {
+            smartScans.append(("Scanning iMessage attachments...", { await self.scanIMessageAttachments() }))
+        }
+        if scanBrokenSymlinks {
+            smartScans.append(("Scanning broken symlinks...",     { await self.scanBrokenSymlinks() }))
+        }
+        if scanScreenRecordings {
+            smartScans.append(("Scanning screen recordings...",   { await self.scanScreenRecordings() }))
+        }
+
+        // iCloud and duplicate scanning removed — handled by standalone tools
+
+        if scanVenvs {
+            smartScans.append(("Scanning virtual environments...", { await self.scanVirtualEnvironments() }))
+        }
+        if scanLargeFiles {
+            smartScans.append(("Scanning large files...",     { await self.scanLargeFiles() }))
+        }
+        // Duplicate scanning moved to standalone Duplicate Finder tool
 
         let totalSmartScans = smartScans.count
         for (index, (name, scanner)) in smartScans.enumerated() {
@@ -658,10 +762,16 @@ class CleanupManager {
         scannedPathsLock.withLock { $0.removeAll() }
     }
 
+    private func checkFullDiskAccess() {
+        let testPath = "\(Self.home)/Library/Mail"
+        let fm = FileManager.default
+        hasFullDiskAccess = fm.isReadableFile(atPath: testPath)
+    }
+
     // MARK: - Clean
 
     func clean() async {
-        let cleanedSize = totalSize
+        let cleanedSize = categories.filter(\.isSelected).reduce(0) { $0 + $1.selectedSize }
         let cleanedCount = selectedCategoryCount
         await MainActor.run {
             isCleaning = true
@@ -685,9 +795,26 @@ class CleanupManager {
                 continue
             }
 
+            if category.isOllamaResource {
+                await runOllamaClean(category: category)
+                await MainActor.run {
+                    cleanSuccessCount += 1
+                    cleanProgress = Double(catIndex + 1) / Double(totalCategories)
+                }
+                continue
+            }
+
             let paths = category.paths
             let deleteChildrenOnly = category.deleteChildrenOnly
             let categoryName = category.name
+            let usePerFile = category.hasPerFileSelection
+            let effectivePaths: [String]
+            if usePerFile {
+                effectivePaths = category.selectedPaths
+            } else {
+                effectivePaths = paths
+            }
+            let effectiveDeleteChildrenOnly = usePerFile ? false : deleteChildrenOnly
 
             let errors: [String] = await withCheckedContinuation { (continuation: CheckedContinuation<[String], Never>) in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -712,9 +839,15 @@ class CleanupManager {
                         }
                     }
 
-                    if deleteChildrenOnly {
-                        for path in paths {
-                            guard let contents = try? fm.contentsOfDirectory(atPath: path) else { continue }
+                    if effectiveDeleteChildrenOnly {
+                        for path in effectivePaths {
+                            let contents: [String]
+                            do {
+                                contents = try fm.contentsOfDirectory(atPath: path)
+                            } catch {
+                                localErrors.append("\(categoryName): Cannot read \(path) — \(error.localizedDescription)")
+                                continue
+                            }
                             for item in contents {
                                 autoreleasepool {
                                     let fullPath = (path as NSString).appendingPathComponent(item)
@@ -723,7 +856,7 @@ class CleanupManager {
                             }
                         }
                     } else {
-                        for path in paths {
+                        for path in effectivePaths {
                             deleteItem(at: URL(fileURLWithPath: path))
                         }
                     }
@@ -747,8 +880,27 @@ class CleanupManager {
             cleanComplete = true
             lastCleanedSize = cleanedSize
             lastCleanedCount = cleanedCount
+
+            // Update categories in-place instead of rescanning
+            for i in categories.indices {
+                if categories[i].isSelected {
+                    if categories[i].hasPerFileSelection {
+                        // Remove only selected breakdown items
+                        let remainingBreakdown = categories[i].breakdown.filter { !$0.isSelected }
+                        categories[i].breakdown = remainingBreakdown
+                        categories[i].size = remainingBreakdown.reduce(0) { $0 + $1.size }
+                        categories[i].fileCount = remainingBreakdown.reduce(0) { $0 + $1.fileCount }
+                    } else {
+                        // Entire category was cleaned
+                        categories[i].size = 0
+                        categories[i].fileCount = 0
+                        categories[i].breakdown = []
+                    }
+                }
+            }
+            // Remove empty categories
+            categories.removeAll(where: { $0.size == 0 && $0.fileCount == 0 })
         }
-        await scan()
     }
 
     // MARK: - Size Calculation
@@ -980,6 +1132,7 @@ class CleanupManager {
                         let size = Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
                         if size > 0 {
                             filePaths.append(url.path)
+                            self.insertScannedPath(url.path)
                             breakdown.append(PathStat(path: url.path, size: size, fileCount: 1))
                             totalSize += size
                         }
@@ -987,6 +1140,7 @@ class CleanupManager {
                         let (size, count) = Self.directorySizeSync(url.path)
                         if size > 0 {
                             filePaths.append(url.path)
+                            self.insertScannedPath(url.path)
                             breakdown.append(PathStat(path: url.path, size: size, fileCount: count))
                             totalSize += size
                         }
@@ -1046,6 +1200,7 @@ class CleanupManager {
                         guard size > 0 else { continue }
 
                         filePaths.append(url.path)
+                        self.insertScannedPath(url.path)
                         breakdown.append(PathStat(path: url.path, size: size, fileCount: 1))
                         totalSize += size
                     }
@@ -1108,6 +1263,7 @@ class CleanupManager {
                     let modDate = rv.contentModificationDate ?? Date.distantPast
                     if modDate < threshold && size > 0 {
                         filePaths.append(url.path)
+                        self.insertScannedPath(url.path)
                         breakdown.append(PathStat(path: url.path, size: size, fileCount: 1))
                         totalSize += size
                     }
@@ -1407,7 +1563,63 @@ class CleanupManager {
         _ = Self.runCommand(dockerPath, arguments: command)
     }
 
+    private func runOllamaClean(category: CleanupCategory) async {
+        guard let ollamaPath = Self.findOllama() else { return }
+        // Remove each selected model individually via `ollama rm <model>`
+        let selectedModels = category.hasPerFileSelection
+            ? category.breakdown.filter(\.isSelected).map(\.path)
+            : category.breakdown.map(\.path)
+        for model in selectedModels {
+            _ = Self.runCommand(ollamaPath, arguments: ["rm", model])
+        }
+    }
+
     // MARK: - node_modules
+
+    // MARK: - Ollama Models Scanner
+
+    private func scanOllamaModels() async -> CleanupCategory? {
+        guard let ollamaPath = Self.findOllama() else { return nil }
+        guard let output = Self.runCommand(ollamaPath, arguments: ["list"]) else { return nil }
+
+        let lines = output.components(separatedBy: "\n").filter { !$0.isEmpty }
+        guard lines.count > 1 else { return nil }
+
+        var breakdown: [PathStat] = []
+        var totalSize: Int64 = 0
+
+        // Parse each model line: split by 2+ whitespace chars
+        for line in lines.dropFirst() {
+            let columns = line.replacingOccurrences(
+                of: "\\s{2,}", with: "\t",
+                options: .regularExpression
+            ).components(separatedBy: "\t").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard columns.count >= 3 else { continue }
+
+            let modelName = columns[0]
+            let sizeStr = columns[2]
+            let sizeBytes = Self.parseDockerSize(sizeStr)
+            let modified = columns.count >= 4 ? columns[3] : ""
+
+            totalSize += sizeBytes
+            breakdown.append(PathStat(
+                path: modelName,
+                size: sizeBytes, fileCount: 1
+            ))
+        }
+
+        guard !breakdown.isEmpty else { return nil }
+        breakdown.sort { $0.size > $1.size }
+
+        return CleanupCategory(
+            name: "Ollama Models", icon: "brain.head.profile", color: .purple,
+            description: "\(breakdown.count) model\(breakdown.count == 1 ? "" : "s") installed — \(Self.formatBytes(totalSize))",
+            group: .developer, safetyLevel: .review,
+            paths: [], breakdown: breakdown,
+            deleteChildrenOnly: false, isOllamaResource: true,
+            size: totalSize, fileCount: breakdown.count, isSelected: false
+        )
+    }
 
     private func scanNodeModules() async -> CleanupCategory? {
         let fm = FileManager.default
@@ -1714,10 +1926,526 @@ class CleanupManager {
         return false
     }
 
+    // MARK: - New Feature Scans
+
+    /// Feature 1: Large Files Scanner
+    private func scanLargeFiles() async -> CleanupCategory? {
+        let thresholdMB = settingLargeFileThresholdMB
+        let thresholdBytes = Int64(thresholdMB) * 1_000_000
+        let dirs = settingLargeFileScanDirs
+        let includeVideos = settingLargeFileIncludeVideos
+        let includeImages = settingLargeFileIncludeImages
+        let includeArchives = settingLargeFileIncludeArchives
+        let includeInstallers = settingLargeFileIncludeInstallers
+        let includeAudio = settingLargeFileIncludeAudio
+        let includeOther = settingLargeFileIncludeOther
+        let maxAgeDays = settingLargeFileMaxAgeDays
+        let maxResults = settingLargeFileMaxResults
+
+        let packageExtensions: Set<String> = ["vmwarevm", "pvs", "fcpbundle", "sparseimage", "sparsebundle",
+                                               "photoslibrary", "band", "logicx", "rtfd", "pages", "numbers", "key"]
+        let videoExts: Set<String> = ["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "m4v", "ts", "mts", "vob", "mpg", "mpeg"]
+        let imageExts: Set<String> = ["raw", "cr2", "cr3", "nef", "arw", "dng", "tiff", "tif", "psd", "ai", "bmp", "svg", "eps"]
+        let archiveExts: Set<String> = ["zip", "tar", "gz", "7z", "rar", "bz2", "xz", "tgz", "zst", "lz", "cab", "sit", "sitx"]
+        let installerExts: Set<String> = ["dmg", "pkg", "iso", "msi", "app"]
+        let audioExts: Set<String> = ["wav", "flac", "aiff", "aif", "alac", "mp3", "m4a", "ogg", "wma", "ape", "dsd", "dsf"]
+
+        guard !dirs.isEmpty else { return nil }
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                let fm = FileManager.default
+                var filePaths: [String] = []
+                var breakdown: [PathStat] = []
+                var totalSize: Int64 = 0
+                let ageThreshold: Date? = maxAgeDays > 0
+                    ? Date().addingTimeInterval(-Double(maxAgeDays) * 86400) : nil
+
+                for dir in dirs where fm.fileExists(atPath: dir) {
+                    guard let enumerator = fm.enumerator(
+                        at: URL(fileURLWithPath: dir),
+                        includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey, .isPackageKey,
+                                                      .isSymbolicLinkKey, .contentAccessDateKey,
+                                                      .ubiquitousItemDownloadingStatusKey],
+                        options: [.skipsHiddenFiles, .skipsPackageDescendants]
+                    ) else { continue }
+
+                    for case let url as URL in enumerator {
+                        autoreleasepool {
+                            guard let rv = try? url.resourceValues(
+                                forKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey, .isPackageKey,
+                                          .isSymbolicLinkKey, .contentAccessDateKey,
+                                          .ubiquitousItemDownloadingStatusKey]
+                            ) else { return }
+
+                            if rv.ubiquitousItemDownloadingStatus == .notDownloaded { return }
+                            if rv.isSymbolicLink == true { return }
+                            let ext = url.pathExtension.lowercased()
+                            if rv.isPackage == true || packageExtensions.contains(ext) {
+                                enumerator.skipDescendants()
+                                return
+                            }
+                            guard rv.isRegularFile == true else { return }
+                            if isPathScanned(url.path) { return }
+
+                            let size = Int64(rv.totalFileAllocatedSize ?? 0)
+                            guard size >= thresholdBytes else { return }
+
+                            // File age filter
+                            if let ageThreshold, let accessed = rv.contentAccessDate, accessed > ageThreshold { return }
+
+                            let path = url.path
+                            if path.contains(".app/Contents/") || path.contains(".framework/") { return }
+
+                            // File type filter
+                            let isVideo = videoExts.contains(ext)
+                            let isImage = imageExts.contains(ext)
+                            let isArchive = archiveExts.contains(ext)
+                            let isInstaller = installerExts.contains(ext)
+                            let isAudio = audioExts.contains(ext)
+                            let isKnown = isVideo || isImage || isArchive || isInstaller || isAudio
+
+                            if isVideo && !includeVideos { return }
+                            if isImage && !includeImages { return }
+                            if isArchive && !includeArchives { return }
+                            if isInstaller && !includeInstallers { return }
+                            if isAudio && !includeAudio { return }
+                            if !isKnown && !includeOther { return }
+
+                            filePaths.append(path)
+                            insertScannedPath(path)
+
+                            breakdown.append(PathStat(path: path, size: size, fileCount: 1,
+                                                       lastAccessed: rv.contentAccessDate))
+                            totalSize += size
+                        }
+                    }
+                }
+
+                breakdown.sort { $0.size > $1.size }
+                let capped = Array(breakdown.prefix(maxResults))
+                let cappedPaths = capped.map(\.path)
+                let cappedSize = capped.reduce(0 as Int64) { $0 + $1.size }
+
+                continuation.resume(returning: CleanupCategory(
+                    name: "Large Files (>\(thresholdMB) MB)", icon: "doc.fill", color: .orange,
+                    description: filePaths.isEmpty
+                        ? "No large files found"
+                        : "\(filePaths.count) large files across user directories",
+                    group: .largeFiles, safetyLevel: .review,
+                    paths: cappedPaths, breakdown: capped,
+                    deleteChildrenOnly: false,
+                    size: cappedSize, fileCount: capped.count,
+                    isSelected: false
+                ))
+            }
+        }
+    }
+
+    /// Feature 2: Virtual Environments Scanner
+    private func scanVirtualEnvironments() async -> CleanupCategory? {
+        let projectDirs = [
+            "\(Self.home)/Projects", "\(Self.home)/Developer", "\(Self.home)/Documents",
+            "\(Self.home)/Desktop", "\(Self.home)/GitHub", "\(Self.home)/repos",
+            "\(Self.home)/code", "\(Self.home)/src", "\(Self.home)/dev",
+            "\(Self.home)/workspace", "\(Self.home)/Work", "\(Self.home)/Sites"
+        ]
+        let fixedPaths: [(String, String)] = [
+            ("\(Self.home)/.virtualenvs", "virtualenvwrapper"),
+            ("\(Self.home)/.local/share/virtualenvs", "pipenv"),
+            ("\(Self.home)/.conda/envs", "conda"),
+            ("\(Self.home)/anaconda3/envs", "anaconda"),
+            ("\(Self.home)/miniconda3/envs", "miniconda"),
+        ]
+        let skipDirs: Set<String> = [".git", "node_modules", "Pods", "DerivedData", "build", ".build",
+                                       "__pycache__", ".tox", ".mypy_cache"]
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                let fm = FileManager.default
+                var filePaths: [String] = []
+                var breakdown: [PathStat] = []
+                var totalSize: Int64 = 0
+
+                func isVenv(_ dirPath: String) -> Bool {
+                    let cfg = (dirPath as NSString).appendingPathComponent("pyvenv.cfg")
+                    let activate = (dirPath as NSString).appendingPathComponent("bin/activate")
+                    return fm.fileExists(atPath: cfg) || fm.fileExists(atPath: activate)
+                }
+
+                // Search project directories for venvs
+                func searchDir(_ base: String, depth: Int) {
+                    guard depth < 4, fm.fileExists(atPath: base) else { return }
+                    guard let entries = try? fm.contentsOfDirectory(atPath: base) else { return }
+                    for entry in entries {
+                        if skipDirs.contains(entry) { continue }
+                        let full = (base as NSString).appendingPathComponent(entry)
+                        var isDir: ObjCBool = false
+                        guard fm.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue else { continue }
+
+                        if (entry == "venv" || entry == ".venv" || entry == "env") && isVenv(full) {
+                            addVenv(full, type: "Python venv")
+                        } else if entry == "vendor" {
+                            let bundlePath = (full as NSString).appendingPathComponent("bundle")
+                            if fm.fileExists(atPath: bundlePath) {
+                                addVenv(bundlePath, type: "Ruby Bundler")
+                            }
+                        } else {
+                            searchDir(full, depth: depth + 1)
+                        }
+                    }
+                }
+
+                func addVenv(_ path: String, type _: String) {
+                    if isPathScanned(path) { return }
+                    let (size, count) = Self.directorySizeSync(path)
+                    guard size >= ScanConstants.minVenvSizeBytes else { return }
+                    filePaths.append(path)
+                    insertScannedPath(path)
+                    breakdown.append(PathStat(path: path, size: size, fileCount: count))
+                    totalSize += size
+                }
+
+                // Scan fixed paths (virtualenvwrapper, pipenv, conda)
+                for (basePath, type) in fixedPaths {
+                    guard fm.fileExists(atPath: basePath),
+                          let entries = try? fm.contentsOfDirectory(atPath: basePath) else { continue }
+                    for entry in entries {
+                        if entry == "base" { continue } // Skip conda base
+                        let full = (basePath as NSString).appendingPathComponent(entry)
+                        addVenv(full, type: type)
+                    }
+                }
+
+                // Scan project directories
+                for dir in projectDirs where fm.fileExists(atPath: dir) {
+                    searchDir(dir, depth: 0)
+                }
+
+                guard !filePaths.isEmpty else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                breakdown.sort { $0.size > $1.size }
+                let capped = Array(breakdown.prefix(ScanConstants.maxVenvEntries))
+
+                continuation.resume(returning: CleanupCategory(
+                    name: "Virtual Environments", icon: "terminal", color: .green,
+                    description: "\(filePaths.count) Python/Ruby virtual environments",
+                    group: .packageManagers, safetyLevel: .review,
+                    paths: filePaths, breakdown: capped,
+                    deleteChildrenOnly: false,
+                    size: totalSize, fileCount: filePaths.count,
+                    isSelected: false
+                ))
+            }
+        }
+    }
+
+    /// Feature 3: iOS Device Backups
+    private func scanIOSBackups() async -> CleanupCategory? {
+        let backupDir = "\(Self.home)/Library/Application Support/MobileSync/Backup"
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: backupDir) else { return nil }
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard let entries = try? fm.contentsOfDirectory(atPath: backupDir) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                var filePaths: [String] = []
+                var breakdown: [PathStat] = []
+                var totalSize: Int64 = 0
+
+                for entry in entries {
+                    let full = (backupDir as NSString).appendingPathComponent(entry)
+                    var isDir: ObjCBool = false
+                    guard fm.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue else { continue }
+
+                    let (size, count) = Self.directorySizeSync(full)
+                    guard size > 0 else { continue }
+
+                    // Try to read device name from Info.plist
+                    var _deviceName = entry
+                    let infoPlist = (full as NSString).appendingPathComponent("Info.plist")
+                    if let data = fm.contents(atPath: infoPlist),
+                       let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] {
+                        if let name = plist["Device Name"] as? String {
+                            _deviceName = name
+                        }
+                        if let date = plist["Last Backup Date"] as? Date {
+                            let fmt = DateFormatter()
+                            fmt.dateStyle = .medium
+                            _deviceName += " (\(fmt.string(from: date)))"
+                        }
+                    }
+                    _ = _deviceName // device name available for future use
+
+                    filePaths.append(full)
+                    breakdown.append(PathStat(path: full, size: size, fileCount: count))
+                    totalSize += size
+                }
+
+                guard !filePaths.isEmpty else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                breakdown.sort { $0.size > $1.size }
+
+                continuation.resume(returning: CleanupCategory(
+                    name: "iOS Device Backups", icon: "iphone", color: .blue,
+                    description: "\(filePaths.count) device backup(s) — review before deleting",
+                    group: .system, safetyLevel: .review,
+                    paths: filePaths, breakdown: breakdown,
+                    deleteChildrenOnly: false,
+                    size: totalSize, fileCount: filePaths.count,
+                    isSelected: false
+                ))
+            }
+        }
+    }
+
+    /// Feature 4: iOS Software Updates (IPSW)
+    private func scanIPSWFiles() async -> CleanupCategory? {
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let fm = FileManager.default
+                var filePaths: [String] = []
+                var breakdown: [PathStat] = []
+                var totalSize: Int64 = 0
+
+                // Direct path
+                let directPath = "\(Self.home)/Library/iTunes/iPhone Software Updates"
+                if fm.fileExists(atPath: directPath) {
+                    let (size, count) = Self.directorySizeSync(directPath)
+                    if size > 0 {
+                        filePaths.append(directPath)
+                        breakdown.append(PathStat(path: directPath, size: size, fileCount: count))
+                        totalSize += size
+                    }
+                }
+
+                // Group Containers wildcard
+                let groupDir = "\(Self.home)/Library/Group Containers"
+                if let containers = try? fm.contentsOfDirectory(atPath: groupDir) {
+                    for container in containers {
+                        let ipswPath = (groupDir as NSString).appendingPathComponent(container + "/iPhone Software Updates")
+                        if fm.fileExists(atPath: ipswPath) {
+                            let (size, count) = Self.directorySizeSync(ipswPath)
+                            if size > 0 {
+                                filePaths.append(ipswPath)
+                                breakdown.append(PathStat(path: ipswPath, size: size, fileCount: count))
+                                totalSize += size
+                            }
+                        }
+                    }
+                }
+
+                guard !filePaths.isEmpty else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                continuation.resume(returning: CleanupCategory(
+                    name: "iOS Software Updates", icon: "arrow.down.app", color: .blue,
+                    description: "Downloaded firmware files (IPSW) — no longer needed after update",
+                    group: .system, safetyLevel: .safe,
+                    paths: filePaths, breakdown: breakdown,
+                    deleteChildrenOnly: false,
+                    size: totalSize, fileCount: filePaths.count,
+                    isSelected: true
+                ))
+            }
+        }
+    }
+
+    /// Feature 5: iMessage Attachments
+    private func scanIMessageAttachments() async -> CleanupCategory? {
+        let attachDir = "\(Self.home)/Library/Messages/Attachments"
+        let fm = FileManager.default
+        guard fm.isReadableFile(atPath: attachDir) else { return nil }
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let (size, count) = Self.directorySizeSync(attachDir)
+                guard size > ScanConstants.minCacheSizeBytes else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                continuation.resume(returning: CleanupCategory(
+                    name: "iMessage Attachments", icon: "message.fill", color: .green,
+                    description: "Cached message attachments — deleting creates 'Missing Attachment' placeholders in Messages. May re-download if Messages in iCloud is enabled.",
+                    group: .system, safetyLevel: .caution,
+                    paths: [attachDir],
+                    breakdown: [PathStat(path: attachDir, size: size, fileCount: count)],
+                    deleteChildrenOnly: true,
+                    size: size, fileCount: count,
+                    isSelected: false
+                ))
+            }
+        }
+    }
+
+    /// Feature 7: Screen Recordings
+    private func scanScreenRecordings() async -> CleanupCategory? {
+        let thresholdDays = settingScreenRecordingThresholdDays
+        let threshold = Date().addingTimeInterval(-Double(thresholdDays) * 86400)
+        let minSize: Int64 = 50_000_000 // 50MB
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                let fm = FileManager.default
+                var filePaths: [String] = []
+                var breakdown: [PathStat] = []
+                var totalSize: Int64 = 0
+
+                // Try mdfind first for fast detection
+                var spotlightPaths: Set<String> = []
+                if let output = Self.runCommand("/usr/bin/mdfind", arguments: ["kMDItemIsScreenCapture == 1"]) {
+                    for line in output.components(separatedBy: "\n") where !line.isEmpty {
+                        spotlightPaths.insert(line)
+                    }
+                }
+
+                let dirs = ["\(Self.home)/Desktop", "\(Self.home)/Movies"]
+                for dir in dirs where fm.fileExists(atPath: dir) {
+                    guard let contents = try? fm.contentsOfDirectory(
+                        at: URL(fileURLWithPath: dir),
+                        includingPropertiesForKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey, .contentModificationDateKey],
+                        options: [.skipsHiddenFiles]
+                    ) else { continue }
+
+                    for url in contents {
+                        let ext = url.pathExtension.lowercased()
+                        guard ext == "mov" || ext == "mp4" else { continue }
+
+                        let isScreenRecording = spotlightPaths.contains(url.path) ||
+                            url.lastPathComponent.lowercased().hasPrefix("screen recording") ||
+                            url.lastPathComponent.lowercased().hasPrefix("simulator screen recording") ||
+                            url.lastPathComponent.lowercased().hasPrefix("capture")
+
+                        guard isScreenRecording else { continue }
+                        guard let rv = try? url.resourceValues(forKeys: [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey, .contentModificationDateKey]),
+                              rv.isRegularFile == true else { continue }
+
+                        let size = Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
+                        let modDate = rv.contentModificationDate ?? Date.distantPast
+                        guard size >= minSize, modDate < threshold else { continue }
+                        guard !isPathScanned(url.path) else { continue }
+
+                        filePaths.append(url.path)
+                        insertScannedPath(url.path)
+                        breakdown.append(PathStat(path: url.path, size: size, fileCount: 1))
+                        totalSize += size
+                    }
+                }
+
+                guard !filePaths.isEmpty else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                breakdown.sort { $0.size > $1.size }
+
+                continuation.resume(returning: CleanupCategory(
+                    name: "Screen Recordings (>\(thresholdDays)d)", icon: "record.circle", color: .teal,
+                    description: "\(filePaths.count) old screen recordings over 50 MB",
+                    group: .storage, safetyLevel: .review,
+                    paths: filePaths, breakdown: breakdown,
+                    deleteChildrenOnly: false,
+                    size: totalSize, fileCount: filePaths.count,
+                    isSelected: false
+                ))
+            }
+        }
+    }
+
+    /// Feature 8: Broken Symlinks
+    private func scanBrokenSymlinks() async -> CleanupCategory? {
+        let dirs = [
+            "\(Self.home)/Library",
+            "/usr/local/bin",
+            "/opt/homebrew/bin"
+        ]
+        let excludeDirs: Set<String> = ["Keychains", "Group Containers", "Mail"]
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let fm = FileManager.default
+                var filePaths: [String] = []
+                var breakdown: [PathStat] = []
+
+                for dir in dirs where fm.fileExists(atPath: dir) {
+                    guard let enumerator = fm.enumerator(
+                        at: URL(fileURLWithPath: dir),
+                        includingPropertiesForKeys: [.isSymbolicLinkKey],
+                        options: [.skipsPackageDescendants]
+                    ) else { continue }
+
+                    for case let url as URL in enumerator {
+                        // Skip excluded directories
+                        let components = url.pathComponents
+                        if components.contains(where: { excludeDirs.contains($0) }) {
+                            enumerator.skipDescendants()
+                            continue
+                        }
+
+                        guard let rv = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]),
+                              rv.isSymbolicLink == true else { continue }
+
+                        // Detect broken symlink
+                        guard let target = try? fm.destinationOfSymbolicLink(atPath: url.path) else { continue }
+                        let resolvedTarget: String
+                        if target.hasPrefix("/") {
+                            resolvedTarget = target
+                        } else {
+                            resolvedTarget = ((url.path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(target)
+                        }
+
+                        // Skip if target is on external volume
+                        if resolvedTarget.hasPrefix("/Volumes/") { continue }
+
+                        if !fm.fileExists(atPath: resolvedTarget) {
+                            filePaths.append(url.path)
+                            breakdown.append(PathStat(path: url.path, size: 0, fileCount: 1))
+                        }
+                    }
+                }
+
+                guard !filePaths.isEmpty else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                continuation.resume(returning: CleanupCategory(
+                    name: "Broken Symlinks (\(filePaths.count) found)", icon: "link", color: .gray,
+                    description: "Symbolic links pointing to nonexistent targets",
+                    group: .system, safetyLevel: .review,
+                    paths: filePaths, breakdown: breakdown,
+                    deleteChildrenOnly: false,
+                    size: 0, fileCount: filePaths.count,
+                    isSelected: false
+                ))
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     static func findDocker() -> String? {
         for path in ["/usr/local/bin/docker", "/opt/homebrew/bin/docker", "/usr/bin/docker"] {
+            if FileManager.default.fileExists(atPath: path) { return path }
+        }
+        return nil
+    }
+
+    static func findOllama() -> String? {
+        for path in ["/usr/local/bin/ollama", "/opt/homebrew/bin/ollama", "/usr/bin/ollama"] {
             if FileManager.default.fileExists(atPath: path) { return path }
         }
         return nil
@@ -1830,6 +2558,10 @@ class CleanupManager {
                     if let cmd = cat.dockerCleanCommand {
                         r += "\(childPrefix)   Command:     docker \(cmd.joined(separator: " "))\n"
                     }
+                }
+
+                if cat.isOllamaResource {
+                    r += "\(childPrefix)   Type:        Ollama model (cleaned via `ollama rm`)\n"
                 }
 
                 if !cat.paths.isEmpty {

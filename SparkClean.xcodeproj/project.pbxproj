@@ -24,7 +24,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		5E3B04E82F5A464D00543812 /* SparkClean.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = SparkClean.app; path = SparkClean.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5E3B04E82F5A464D00543812 /* SparkClean.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SparkClean.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5E3B04F52F5A464E00543812 /* SparkCleanTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SparkCleanTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5E3B04FF2F5A464E00543812 /* SparkCleanUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SparkCleanUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */

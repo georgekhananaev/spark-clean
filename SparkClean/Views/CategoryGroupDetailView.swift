@@ -63,7 +63,7 @@ struct CategoryGroupDetailView: View {
                 LazyVStack(spacing: 8) {
                     ForEach(groupCategories) { category in
                         CategoryRowView(
-                            category: category,
+                            categoryID: category.id,
                             isSelected: Binding(
                                 get: { manager.categories.first(where: { $0.id == category.id })?.isSelected ?? false },
                                 set: { newValue in
@@ -71,7 +71,8 @@ struct CategoryGroupDetailView: View {
                                         manager.categories[idx].isSelected = newValue
                                     }
                                 }
-                            )
+                            ),
+                            manager: manager
                         )
                     }
                 }
@@ -117,16 +118,35 @@ struct CategoryGroupDetailView: View {
 // MARK: - Category Row
 
 struct CategoryRowView: View {
-    let category: CleanupCategory
+    let categoryID: UUID
     @Binding var isSelected: Bool
+    @Bindable var manager: CleanupManager
     @State private var isHovered = false
     @State private var showDetails = false
 
+    private var category: CleanupCategory {
+        manager.categories.first(where: { $0.id == categoryID }) ?? CleanupCategory(
+            name: "", icon: "questionmark", color: .gray, description: "",
+            group: .system, safetyLevel: .safe, paths: []
+        )
+    }
+
+    private var isPartiallySelected: Bool {
+        guard !category.breakdown.isEmpty else { return false }
+        let selectedCount = category.breakdown.filter(\.isSelected).count
+        return selectedCount > 0 && selectedCount < category.breakdown.count
+    }
+
     var body: some View {
         HStack(spacing: 14) {
-            Toggle("", isOn: $isSelected)
-                .toggleStyle(.checkbox)
-                .labelsHidden()
+            Button {
+                isSelected.toggle()
+            } label: {
+                Image(systemName: isPartiallySelected ? "minus.square.fill" : (isSelected ? "checkmark.square.fill" : "square"))
+                    .font(.system(size: 16))
+                    .foregroundStyle(isSelected || isPartiallySelected ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
 
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
@@ -142,7 +162,7 @@ struct CategoryRowView: View {
                 Text(category.name)
                     .font(.system(size: 13, weight: .medium))
 
-                Text("\(category.description) · \(category.fileCount) files")
+                Text("\(category.description) · \(category.selectedFileCount) files")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -184,11 +204,11 @@ struct CategoryRowView: View {
             .help("Show detailed breakdown of files in this category")
             .accessibilityLabel("Show details for \(category.name)")
             .popover(isPresented: $showDetails) {
-                PathBreakdownView(category: category)
+                PathBreakdownView(categoryID: category.id, manager: manager)
                     .frame(width: 540, height: 380)
             }
 
-            SizeLabel(size: category.size, color: category.color)
+            SizeLabel(size: category.selectedSize, color: category.color)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -220,7 +240,20 @@ struct CategoryRowView: View {
 // MARK: - Path Breakdown
 
 struct PathBreakdownView: View {
-    let category: CleanupCategory
+    let categoryID: UUID
+    @Bindable var manager: CleanupManager
+    @State private var deletingModels: Set<String> = []
+
+    private var category: CleanupCategory {
+        manager.categories.first(where: { $0.id == categoryID }) ?? CleanupCategory(
+            name: "", icon: "questionmark", color: .gray, description: "",
+            group: .system, safetyLevel: .safe, paths: []
+        )
+    }
+
+    private var hasPerFileSelection: Bool {
+        category.hasPerFileSelection
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -241,6 +274,21 @@ struct PathBreakdownView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if hasPerFileSelection {
+                HStack(spacing: 12) {
+                    Button("Select All Items") { toggleAllBreakdown(true) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Deselect All Items") { toggleAllBreakdown(false) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Spacer()
+                    Text("Selected: \(CleanupManager.formatBytes(category.selectedSize))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Divider()
 
             if category.breakdown.isEmpty {
@@ -254,16 +302,28 @@ struct PathBreakdownView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(category.breakdown) { stat in
+                        ForEach(Array(category.breakdown.enumerated()), id: \.element.id) { idx, stat in
                             HStack(alignment: .center, spacing: 12) {
+                                if hasPerFileSelection {
+                                    Toggle("", isOn: breakdownBinding(for: idx))
+                                        .toggleStyle(.checkbox)
+                                        .labelsHidden()
+                                }
+
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text((stat.path as NSString).lastPathComponent)
-                                        .font(.system(size: 13, weight: .medium))
-                                        .lineLimit(1)
-                                    Text((stat.path as NSString).deletingLastPathComponent)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
+                                    if category.isOllamaResource || category.isDockerResource {
+                                        Text(stat.path)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .lineLimit(1)
+                                    } else {
+                                        Text((stat.path as NSString).lastPathComponent)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .lineLimit(1)
+                                        Text((stat.path as NSString).deletingLastPathComponent)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
                                 }
                                 Spacer()
                                 VStack(alignment: .trailing, spacing: 2) {
@@ -280,18 +340,72 @@ struct PathBreakdownView: View {
                                             .foregroundStyle(.tertiary)
                                     }
                                 }
-                                Button("Reveal") {
-                                    let url = URL(fileURLWithPath: stat.path)
-                                    NSWorkspace.shared.activateFileViewerSelecting([url])
+
+                                // Show children (duplicate copies)
+                                if !stat.children.isEmpty {
+                                    Text("\(stat.children.count) copies")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 2)
+                                        .background(Capsule().fill(Color.orange.opacity(0.15)))
+                                        .foregroundStyle(.orange)
                                 }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+
+                                if category.isOllamaResource {
+                                    if deletingModels.contains(stat.path) {
+                                        HStack(spacing: 4) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                            Text("Removing…")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    } else {
+                                        Button("Delete") {
+                                            deleteOllamaModel(stat.path, at: idx)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                        .tint(.red)
+                                    }
+                                } else if !category.isDockerResource {
+                                    Button("Reveal") {
+                                        let path = stat.path
+                                        let revealPath = stat.children.first?.path ?? path
+                                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: revealPath)])
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
                             }
                             .padding(8)
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.primary.opacity(0.03))
+                                    .fill(hasPerFileSelection && !stat.isSelected ? Color.primary.opacity(0.01) : Color.primary.opacity(0.03))
                             )
+                            .opacity(hasPerFileSelection && !stat.isSelected ? 0.5 : 1.0)
+
+                            // Show children inline for duplicates
+                            if !stat.children.isEmpty {
+                                ForEach(stat.children) { child in
+                                    HStack(spacing: 8) {
+                                        Spacer().frame(width: 28)
+                                        Image(systemName: "arrow.turn.down.right")
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                        Text(child.path)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Text(CleanupManager.formatBytes(child.size))
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2)
+                                }
+                            }
                         }
                     }
                 }
@@ -299,12 +413,63 @@ struct PathBreakdownView: View {
         }
         .padding(16)
     }
+
+    private func breakdownBinding(for index: Int) -> Binding<Bool> {
+        Binding(
+            get: {
+                guard let catIdx = manager.categories.firstIndex(where: { $0.id == category.id }),
+                      index < manager.categories[catIdx].breakdown.count else { return true }
+                return manager.categories[catIdx].breakdown[index].isSelected
+            },
+            set: { newValue in
+                guard let catIdx = manager.categories.firstIndex(where: { $0.id == category.id }),
+                      index < manager.categories[catIdx].breakdown.count else { return }
+                manager.categories[catIdx].breakdown[index].isSelected = newValue
+            }
+        )
+    }
+
+    private func toggleAllBreakdown(_ selected: Bool) {
+        guard let catIdx = manager.categories.firstIndex(where: { $0.id == category.id }) else { return }
+        for i in manager.categories[catIdx].breakdown.indices {
+            manager.categories[catIdx].breakdown[i].isSelected = selected
+        }
+    }
+
+    private func deleteOllamaModel(_ modelName: String, at index: Int) {
+        guard let ollamaPath = CleanupManager.findOllama() else { return }
+        deletingModels.insert(modelName)
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = CleanupManager.runCommand(ollamaPath, arguments: ["rm", modelName])
+            DispatchQueue.main.async {
+                deletingModels.remove(modelName)
+                guard let catIdx = manager.categories.firstIndex(where: { $0.id == categoryID }) else { return }
+                if index < manager.categories[catIdx].breakdown.count {
+                    let removedSize = manager.categories[catIdx].breakdown[index].size
+                    manager.categories[catIdx].breakdown.remove(at: index)
+                    manager.categories[catIdx].size -= removedSize
+                    manager.categories[catIdx].fileCount -= 1
+                }
+                // Update description to reflect remaining models
+                let remaining = manager.categories[catIdx].breakdown.count
+                if remaining == 0 {
+                    manager.categories[catIdx].size = 0
+                    manager.categories[catIdx].fileCount = 0
+                    manager.categories[catIdx].description = "No models installed"
+                } else {
+                    let totalSize = manager.categories[catIdx].breakdown.reduce(0) { $0 + $1.size }
+                    manager.categories[catIdx].description = "\(remaining) model\(remaining == 1 ? "" : "s") installed — \(CleanupManager.formatBytes(totalSize))"
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Export Report View
 
 struct ExportReportView: View {
-    let report: String
+    @Binding var report: String
+    @Binding var isGenerating: Bool
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -312,42 +477,60 @@ struct ExportReportView: View {
             HStack {
                 Text("Scan Report")
                     .font(.headline)
+                if isGenerating {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Generating...")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
 
-            ScrollView {
-                Text(report)
+            if isGenerating {
+                Spacer()
+                ProgressView("Generating report...")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Spacer()
+            } else {
+                TextEditor(text: .constant(report))
                     .font(.system(size: 12, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .scrollContentBackground(.hidden)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
             }
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(nsColor: .textBackgroundColor))
-            )
 
             HStack {
+                if !isGenerating {
+                    Text("\(report.count) characters")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
                 Spacer()
                 Button("Copy to Clipboard") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(report, forType: .string)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(isGenerating)
 
                 Button("Save...") {
                     let panel = NSSavePanel()
                     panel.allowedContentTypes = [.plainText]
-                    panel.nameFieldStringValue = "MacCleanup_Report_\(Date().formatted(date: .numeric, time: .omitted)).txt"
+                    panel.nameFieldStringValue = "SparkClean_Report_\(Date().formatted(date: .numeric, time: .omitted)).txt"
                     if panel.runModal() == .OK, let url = panel.url {
                         try? report.write(to: url, atomically: true, encoding: .utf8)
                     }
                 }
                 .buttonStyle(.bordered)
+                .disabled(isGenerating)
             }
         }
         .padding(20)
-        .frame(width: 600, height: 500)
+        .frame(width: 700, height: 550)
     }
 }

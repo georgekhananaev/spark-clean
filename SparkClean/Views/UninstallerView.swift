@@ -255,6 +255,76 @@ class UninstallerManager {
                     }
                 }
 
+                // Known app data paths (non-standard locations)
+                if let knownPaths = KnownAppData.paths[bundleID] {
+                    for entry in knownPaths {
+                        let expandedPath = entry.path.replacingOccurrences(of: "~", with: home)
+                        guard fm.fileExists(atPath: expandedPath) else { continue }
+                        guard !related.contains(where: { $0.path == expandedPath }) else { continue }
+
+                        var dirSize: Int64 = 0
+                        var dirCount = 0
+                        if let enumerator = fm.enumerator(
+                            at: URL(fileURLWithPath: expandedPath),
+                            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey],
+                            options: [], errorHandler: nil
+                        ) {
+                            for case let fileURL as URL in enumerator {
+                                if let rv = try? fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey]),
+                                   rv.isRegularFile == true {
+                                    dirSize += Int64(rv.totalFileAllocatedSize ?? 0)
+                                    dirCount += 1
+                                }
+                            }
+                        }
+
+                        if dirSize > 0 {
+                            let label = entry.safetyNote.isEmpty ? entry.description : "\(entry.description) \u{26a0}\u{fe0f} \(entry.safetyNote)"
+                            related.append(RelatedPath(path: expandedPath, category: label, size: dirSize, fileCount: dirCount))
+                        }
+                    }
+                }
+
+                // Dotfile auto-discovery for apps not in known map
+                if KnownAppData.paths[bundleID] == nil {
+                    let homeURL = URL(fileURLWithPath: home)
+                    let appNameLower = appName.lowercased().replacingOccurrences(of: " ", with: "")
+                    let bundleSuffix = bundleID.components(separatedBy: ".").last?.lowercased() ?? ""
+
+                    if let homeContents = try? fm.contentsOfDirectory(at: homeURL, includingPropertiesForKeys: [.isDirectoryKey], options: []) {
+                        for url in homeContents {
+                            let name = url.lastPathComponent
+                            guard name.hasPrefix(".") else { continue }
+                            guard let rv = try? url.resourceValues(forKeys: [.isDirectoryKey]),
+                                  rv.isDirectory == true else { continue }
+
+                            let dirName = String(name.dropFirst()).lowercased()
+                            guard dirName.contains(appNameLower) || (!bundleSuffix.isEmpty && dirName.contains(bundleSuffix)) else { continue }
+                            guard !related.contains(where: { $0.path == url.path }) else { continue }
+
+                            var dirSize: Int64 = 0
+                            var dirCount = 0
+                            if let enumerator = fm.enumerator(
+                                at: url,
+                                includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey],
+                                options: [], errorHandler: nil
+                            ) {
+                                for case let fileURL as URL in enumerator {
+                                    if let rv2 = try? fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey]),
+                                       rv2.isRegularFile == true {
+                                        dirSize += Int64(rv2.totalFileAllocatedSize ?? 0)
+                                        dirCount += 1
+                                    }
+                                }
+                            }
+
+                            if dirSize > 10_000_000 {
+                                related.append(RelatedPath(path: url.path, category: "Possible App Data (Home Directory)", size: dirSize, fileCount: dirCount))
+                            }
+                        }
+                    }
+                }
+
                 info.relatedPaths = related.sorted { $0.size > $1.size }
                 info.totalRelatedSize = related.reduce(0) { $0 + $1.size }
 
@@ -433,6 +503,9 @@ struct UninstallerView: View {
     @State private var appToUninstall: AppInfo? = nil
     @State private var showExportSheet = false
     @State private var isUninstalling = false
+    @State private var exportReport = ""
+    @State private var isGeneratingReport = false
+    @State private var lastUninstalledApp: String? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -440,6 +513,33 @@ struct UninstallerView: View {
             headerSection
 
             Divider()
+
+            if let appName = lastUninstalledApp {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("\"\(appName)\" moved to Trash")
+                        .font(.callout)
+                    Spacer()
+                    Button("Open Trash") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory() + "/.Trash"))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    Button {
+                        lastUninstalledApp = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(Color.green.opacity(0.08))
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
 
             if uninstaller.scanComplete {
                 HSplitView {
@@ -450,7 +550,7 @@ struct UninstallerView: View {
                     // Detail panel
                     if let app = selectedApp {
                         appDetailSection(app)
-                            .frame(minWidth: 300, maxWidth: .infinity)
+                            .frame(minWidth: 420, idealWidth: 500, maxWidth: .infinity)
                     } else {
                         VStack {
                             Spacer()
@@ -476,7 +576,15 @@ struct UninstallerView: View {
                         let success = await uninstaller.uninstallApp(app)
                         if success {
                             selectedApp = nil
-                            await uninstaller.scanApps()
+                            uninstaller.apps.removeAll(where: { $0.id == app.id })
+                            lastUninstalledApp = app.name
+                            // Auto-dismiss the banner after 5 seconds
+                            Task {
+                                try? await Task.sleep(for: .seconds(5))
+                                if lastUninstalledApp == app.name {
+                                    lastUninstalledApp = nil
+                                }
+                            }
                         }
                         isUninstalling = false
                     }
@@ -488,7 +596,7 @@ struct UninstallerView: View {
             }
         }
         .sheet(isPresented: $showExportSheet) {
-            ExportReportView(report: uninstaller.exportReport(verbose: true))
+            ExportReportView(report: $exportReport, isGenerating: $isGeneratingReport)
         }
     }
 
@@ -519,13 +627,6 @@ struct UninstallerView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 180)
 
-                // Sort
-                Picker("Sort", selection: $uninstaller.sortOrder) {
-                    ForEach(AppSortOrder.allCases, id: \.self) { order in
-                        Text(order.rawValue).tag(order)
-                    }
-                }
-                .frame(width: 130)
             }
 
             Button {
@@ -544,14 +645,23 @@ struct UninstallerView: View {
             .disabled(uninstaller.isScanning)
 
             if uninstaller.scanComplete {
-                Button {
-                    showExportSheet = true
+                Menu {
+                    Button("Export Report...") {
+                        exportReport = uninstaller.exportReport(verbose: true)
+                        isGeneratingReport = false
+                        showExportSheet = true
+                    }
+                    Divider()
+                    Button("Sort by Name") { uninstaller.sortOrder = .name }
+                    Button("Sort by Total Size") { uninstaller.sortOrder = .totalSize }
+                    Button("Sort by App Size") { uninstaller.sortOrder = .appSize }
+                    Button("Sort by Related Data") { uninstaller.sortOrder = .relatedSize }
                 } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 13))
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 14))
                 }
-                .buttonStyle(.bordered)
-                .help("Export detailed audit report")
+                .menuStyle(.borderlessButton)
+                .frame(width: 30)
             }
         }
         .padding(.horizontal, 24)
@@ -625,14 +735,40 @@ struct UninstallerView: View {
                             .font(.headline)
 
                         ForEach(app.relatedPaths) { related in
+                            let isLarge = related.size > 1_073_741_824
+                            let hasSafetyNote = related.category.contains("\u{26a0}\u{fe0f}")
+                            let isPossibleData = related.category.hasPrefix("Possible App Data")
+                            let isWarning = isLarge || hasSafetyNote || isPossibleData
+
                             HStack(spacing: 12) {
-                                Image(systemName: iconForCategory(related.category))
-                                    .foregroundStyle(.secondary)
+                                Image(systemName: isWarning ? "exclamationmark.triangle.fill" : iconForCategory(related.category))
+                                    .foregroundStyle(isWarning ? .orange : .secondary)
                                     .frame(width: 20)
 
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(related.category)
-                                        .font(.system(size: 13, weight: .medium))
+                                    HStack(spacing: 6) {
+                                        Text(related.category)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundStyle(hasSafetyNote ? .orange : .primary)
+
+                                        if isLarge {
+                                            Text("LARGE")
+                                                .font(.system(size: 9, weight: .bold))
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 1)
+                                                .background(Capsule().fill(Color.orange.opacity(0.2)))
+                                                .foregroundStyle(.orange)
+                                        }
+
+                                        if isPossibleData {
+                                            Text("AUTO-DETECTED")
+                                                .font(.system(size: 9, weight: .bold))
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 1)
+                                                .background(Capsule().fill(Color.blue.opacity(0.2)))
+                                                .foregroundStyle(.blue)
+                                        }
+                                    }
                                     Text(related.path)
                                         .font(.caption)
                                         .foregroundStyle(.tertiary)
@@ -647,7 +783,7 @@ struct UninstallerView: View {
 
                                 Text(CleanupManager.formatBytes(related.size))
                                     .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(isLarge ? .red : .orange)
 
                                 Button {
                                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: related.path)])
@@ -661,7 +797,11 @@ struct UninstallerView: View {
                             .padding(10)
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.primary.opacity(0.03))
+                                    .fill(isWarning ? Color.orange.opacity(0.06) : Color.primary.opacity(0.03))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(isWarning ? Color.orange.opacity(0.2) : Color.clear, lineWidth: 1)
                             )
                         }
                     }
@@ -729,6 +869,14 @@ struct UninstallerView: View {
     }
 
     private func iconForCategory(_ category: String) -> String {
+        if category.hasPrefix("Possible App Data") { return "questionmark.folder" }
+        if category.contains("AI Models") || category.contains("Stable Diffusion") { return "brain" }
+        if category.contains("Virtual Machine") || category.contains("VM") { return "desktopcomputer" }
+        if category.contains("Games") { return "gamecontroller" }
+        if category.contains("SDK") { return "wrench.and.screwdriver" }
+        if category.contains("Docker") { return "cube.box" }
+        if category.contains("Profiles") || category.contains("Extensions") { return "person.crop.circle" }
+
         switch category {
         case "Caches": return "archivebox"
         case "App Support": return "folder.badge.gearshape"

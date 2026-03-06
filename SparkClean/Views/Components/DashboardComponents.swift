@@ -186,11 +186,12 @@ struct GroupCard: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.primary)
 
-                Text(CleanupManager.formatBytes(groupSize))
+                Text(categories.isEmpty ? "—" : CleanupManager.formatBytes(groupSize))
                     .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(group.color)
+                    .foregroundStyle(categories.isEmpty ? .secondary : group.color)
             }
             .padding(16)
+            .opacity(categories.isEmpty ? 0.6 : 1.0)
             .background(
                 RoundedRectangle(cornerRadius: 14)
                     .fill(Color(nsColor: .controlBackgroundColor))
