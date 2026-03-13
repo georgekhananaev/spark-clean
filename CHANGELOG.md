@@ -5,6 +5,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+## [1.0.0] - 2026-03-14
+
+### Added
+- **app**: Rename project from MacSimpleCleanup to SparkClean
+- **cleanup**: Disk cleanup scanning and file management
+- **uninstaller**: App uninstaller feature
+- **settings**: Settings view for user preferences
+- **dashboard**: Dashboard components for stats display
+- **models**: Data models for cleanup categories and items
+- **assets**: Custom app icon set with all required sizes
+- **project**: App entitlements and .gitignore configuration
 - **ui**: Splash screen intro video on app launch with skip button and settings toggle
 - **cleanup**: Ollama model management with per-model deletion via `ollama rm` CLI
 - **cleanup**: Large Files category with configurable size, file types, locations, and age filter
@@ -66,8 +82,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 - **models**: largeFiles category uses yellow color instead of duplicate orange
 
 ### Removed
-- **cleanup**: iCloud scan categories (Drive, App Data, Photos Library) — problematic and slow
-- **cleanup**: Duplicate scan category — replaced by standalone Duplicate Finder tool
+- **cleanup**: iCloud scan categories (Drive, App Data, Photos Library)
+- **cleanup**: Duplicate scan category, replaced by standalone Duplicate Finder tool
 - **settings**: iCloud scan toggle removed from settings
 - **cleanup**: CryptoKit import from CleanupManager (moved to DuplicateFinderView only)
 - **app**: Removed unused isHoveringCopy state variable
@@ -76,7 +92,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 ### Fixed
 - **uninstaller**: Trash-only mode no longer falls back to permanent deletion silently
 - **uninstaller**: SparkClean excluded from its own uninstaller list
-- **uninstaller**: Fixed inverted trash fallback logic (was != nil, now do/catch)
+- **uninstaller**: Fixed inverted trash fallback logic
 - **uninstaller**: Added running app termination check before uninstall
 - **ui**: Division by zero guard on disk usage and category bars
 - **ui**: Export report filename uses yyyy-MM-dd instead of locale date with slashes
@@ -84,15 +100,3 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 - **ui**: Fixed estimatedSmartScans count to match actual scan count
 - **app**: Fixed Help menu triggering macOS "Help isn't available" system message
 - **app**: Fixed version display showing unwanted build number "(1)"
-
-## [1.0.0] - 2026-03-06
-
-### Added
-- **app**: Rename project from MacSimpleCleanup to SparkClean
-- **cleanup**: Disk cleanup scanning and file management
-- **uninstaller**: App uninstaller feature
-- **settings**: Settings view for user preferences
-- **dashboard**: Dashboard components for stats display
-- **models**: Data models for cleanup categories and items
-- **assets**: Custom app icon set with all required sizes
-- **project**: App entitlements and .gitignore configuration
