@@ -111,6 +111,10 @@ Or from the terminal:
 xcodebuild -project SparkClean.xcodeproj -scheme SparkClean -configuration Release build
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
 ## License
 
 See [LICENSE](LICENSE) for the full terms.
