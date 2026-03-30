@@ -1133,6 +1133,17 @@ struct WhatsNewView: View {
     @Environment(\.dismiss) private var dismiss
 
     private let releases: [ReleaseNote] = [
+        ReleaseNote(version: "1.1.0", date: "March 2026", notes: [
+            "Fixed critical memory leak that could cause 34GB+ RAM usage and crashes",
+            "Added memory pressure monitoring — scans auto-cancel under critical pressure",
+            "Protected path blocklist prevents deletion of system and user directories",
+            "Deletion audit log written to ~/Library/Logs/SparkClean/",
+            "Fixed Docker double-counting — sizes now reported accurately via CLI",
+            "Old Downloads now checks actual file dates inside folders",
+            "10 new categories: HuggingFace, Ollama, LM Studio, Bazel, Deno, Poetry, and more",
+            "Trash failure no longer silently falls back to permanent deletion",
+            "Duplicate Finder uses 150x less memory for image hashing",
+        ]),
         ReleaseNote(version: "1.0.0", date: "March 2026", notes: [
             "Deep scan for caches, temp files, logs, and crash reports",
             "Browser cache cleanup (Safari, Chrome, Firefox, Arc, Edge, Brave)",
