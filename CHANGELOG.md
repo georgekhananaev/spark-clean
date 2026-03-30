@@ -5,10 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 ## [Unreleased]
 
 ### Added
+- **uninstaller**: Smart Trash Monitor — detects apps moved to Trash and offers to clean leftover files (caches, preferences, containers, logs, launch agents)
+- **settings**: "Monitor Trash for uninstalled apps" toggle under Smart Cleanup (off by default)
 
 ### Changed
 
 ### Fixed
+- **uninstaller**: Fixed autoreleasepool leak in dirSizeAndCount (same pattern as the v1.1.0 directorySizeSync fix)
+- **uninstaller**: Eliminated duplicated file enumeration code in KnownAppData and dotfile scanning
 
 ## [1.1.0] - 2026-03-30
 

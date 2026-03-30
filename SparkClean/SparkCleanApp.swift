@@ -11,13 +11,27 @@ import AppKit
 @main
 struct SparkCleanApp: App {
     @State private var showCustomAbout = false
+    @State private var trashMonitor = TrashMonitor()
+    @AppStorage("trashMonitorEnabled") private var trashMonitorEnabled = false
 
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(trashMonitor)
                 .frame(minWidth: 800, minHeight: 550)
                 .sheet(isPresented: $showCustomAbout) {
                     CustomAboutView()
+                }
+                .onAppear {
+                    if trashMonitorEnabled {
+                        trashMonitor.isEnabled = true
+                    }
+                }
+                .onChange(of: trashMonitorEnabled) { _, newValue in
+                    trashMonitor.isEnabled = newValue
+                }
+                .sheet(item: $trashMonitor.lastDetectedApp) { detected in
+                    TrashLeftoverSheet(detected: detected, trashMonitor: trashMonitor)
                 }
         }
         .defaultSize(width: 960, height: 680)
@@ -284,4 +298,91 @@ extension Notification.Name {
     static let showHelp = Notification.Name("showHelp")
     static let showPrivacyPolicy = Notification.Name("showPrivacyPolicy")
     static let showWhatsNew = Notification.Name("showWhatsNew")
+}
+
+// MARK: - Trash Leftover Cleanup Sheet
+
+struct TrashLeftoverSheet: View {
+    let detected: TrashMonitor.DetectedTrashedApp
+    let trashMonitor: TrashMonitor
+    @Environment(\.dismiss) private var dismiss
+    @State private var isCleaning = false
+    @State private var cleaned = false
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack {
+                Image(systemName: "trash.slash")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                Text("Leftover Files Detected")
+                    .font(.title3.bold())
+                Spacer()
+                Button("Dismiss") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("**\(detected.appName)** was moved to Trash but left **\(detected.formattedSize)** of data behind:")
+                    .font(.body)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(detected.leftovers, id: \.path) { item in
+                            HStack {
+                                Text(item.category)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 100, alignment: .leading)
+                                Text((item.path as NSString).lastPathComponent)
+                                    .font(.caption.monospaced())
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer()
+                                Text(CleanupManager.formatBytes(item.size))
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 200)
+            }
+
+            HStack {
+                Text("Files will be moved to Trash (recoverable).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+
+                if cleaned {
+                    Label("Cleaned!", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Button("Clean Leftovers") {
+                        cleanLeftovers()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isCleaning)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 500, height: 350)
+    }
+
+    private func cleanLeftovers() {
+        isCleaning = true
+        Task.detached(priority: .userInitiated) {
+            let fm = FileManager.default
+            for item in detected.leftovers {
+                let url = URL(fileURLWithPath: item.path)
+                try? fm.trashItem(at: url, resultingItemURL: nil)
+            }
+            await MainActor.run {
+                cleaned = true
+                isCleaning = false
+            }
+        }
+    }
 }

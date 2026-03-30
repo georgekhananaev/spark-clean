@@ -271,21 +271,7 @@ class UninstallerManager {
                         guard fm.fileExists(atPath: expandedPath) else { continue }
                         guard !related.contains(where: { $0.path == expandedPath }) else { continue }
 
-                        var dirSize: Int64 = 0
-                        var dirCount = 0
-                        if let enumerator = fm.enumerator(
-                            at: URL(fileURLWithPath: expandedPath),
-                            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey],
-                            options: [], errorHandler: nil
-                        ) {
-                            for case let fileURL as URL in enumerator {
-                                if let rv = try? fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey]),
-                                   rv.isRegularFile == true {
-                                    dirSize += Int64(rv.totalFileAllocatedSize ?? 0)
-                                    dirCount += 1
-                                }
-                            }
-                        }
+                        let (dirSize, dirCount) = Self.dirSizeAndCount(expandedPath)
 
                         if dirSize > 0 {
                             let label = entry.safetyNote.isEmpty ? entry.description : "\(entry.description) \u{26a0}\u{fe0f} \(entry.safetyNote)"
@@ -311,21 +297,7 @@ class UninstallerManager {
                             guard dirName.contains(appNameLower) || (!bundleSuffix.isEmpty && dirName.contains(bundleSuffix)) else { continue }
                             guard !related.contains(where: { $0.path == url.path }) else { continue }
 
-                            var dirSize: Int64 = 0
-                            var dirCount = 0
-                            if let enumerator = fm.enumerator(
-                                at: url,
-                                includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey],
-                                options: [], errorHandler: nil
-                            ) {
-                                for case let fileURL as URL in enumerator {
-                                    if let rv2 = try? fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .isRegularFileKey]),
-                                       rv2.isRegularFile == true {
-                                        dirSize += Int64(rv2.totalFileAllocatedSize ?? 0)
-                                        dirCount += 1
-                                    }
-                                }
-                            }
+                            let (dirSize, dirCount) = Self.dirSizeAndCount(url.path)
 
                             if dirSize > 10_000_000 {
                                 related.append(RelatedPath(path: url.path, category: "Possible App Data (Home Directory)", size: dirSize, fileCount: dirCount))
@@ -492,11 +464,14 @@ class UninstallerManager {
             errorHandler: nil
         ) else { return (0, 0) }
 
-        for case let url as URL in enumerator {
-            guard let rv = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey]) else { continue }
-            if rv.isRegularFile == true {
-                total += Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
-                count += 1
+        while let obj = enumerator.nextObject() {
+            guard let url = obj as? URL else { continue }
+            autoreleasepool {
+                guard let rv = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey]) else { return }
+                if rv.isRegularFile == true {
+                    total += Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
+                    count += 1
+                }
             }
         }
         return (total, count)

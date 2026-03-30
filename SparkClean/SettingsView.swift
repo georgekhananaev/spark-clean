@@ -24,6 +24,7 @@ struct SettingsView: View {
     @AppStorage("scanBrokenSymlinks") private var scanBrokenSymlinks = true
     @AppStorage("scanScreenRecordings") private var scanScreenRecordings = true
 @AppStorage("showIntroVideo") private var showIntroVideo = true
+    @AppStorage("trashMonitorEnabled") private var trashMonitorEnabled = false
 
     // Large Files settings
     @AppStorage("largeFileScanDownloads") private var largeFileScanDownloads = true
@@ -77,6 +78,14 @@ struct SettingsView: View {
         Form {
             Section("Startup") {
                 Toggle("Show intro video on launch", isOn: $showIntroVideo)
+            }
+
+            Section {
+                Toggle("Monitor Trash for uninstalled apps", isOn: $trashMonitorEnabled)
+            } header: {
+                Text("Smart Cleanup")
+            } footer: {
+                Text("When enabled, SparkClean detects apps moved to Trash and offers to clean leftover files. Uses zero CPU when idle.")
             }
 
             Section("Core Scans") {
