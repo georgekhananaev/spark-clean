@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+## [1.1.0] - 2026-03-30
+
+### Added
 - **cleanup**: Memory pressure monitoring via DispatchSourceMemoryPressure — auto-cancels scans under critical system pressure
 - **cleanup**: Protected path blocklist (30+ paths) preventing deletion of critical system/user directories
 - **cleanup**: Deletion audit log written to ~/Library/Logs/SparkClean/ on every cleanup
