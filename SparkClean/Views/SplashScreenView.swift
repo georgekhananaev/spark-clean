@@ -11,6 +11,7 @@ import AVKit
 struct SplashScreenView: View {
     let onFinished: () -> Void
     @State private var player: AVPlayer?
+    @State private var observer: NSObjectProtocol?
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -49,7 +50,7 @@ struct SplashScreenView: View {
             avPlayer.volume = 1.0
             self.player = avPlayer
 
-            NotificationCenter.default.addObserver(
+            observer = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime,
                 object: avPlayer.currentItem,
                 queue: .main
@@ -61,6 +62,8 @@ struct SplashScreenView: View {
         }
         .onDisappear {
             player?.pause()
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observer = nil
             player = nil
         }
     }

@@ -8,6 +8,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import Dispatch
 import os
 
 // MARK: - CleanupManager
@@ -81,7 +82,12 @@ class CleanupManager {
     }
 
     func selectAll() {
-        for i in categories.indices { categories[i].isSelected = true }
+        for i in categories.indices {
+            // Never batch-select caution categories — require explicit individual selection
+            if categories[i].safetyLevel != .caution {
+                categories[i].isSelected = true
+            }
+        }
     }
 
     func deselectAll() {
@@ -96,6 +102,102 @@ class CleanupManager {
     }
 
     static let home = NSHomeDirectory()
+
+    // MARK: - Protected Paths (NEVER delete these)
+
+    /// Paths that must never be deleted — defense-in-depth against scan bugs
+    private static let protectedPaths: Set<String> = {
+        let h = NSHomeDirectory()
+        return [
+            "/", "/System", "/usr", "/bin", "/sbin", "/var", "/etc", "/tmp", "/private",
+            "/Applications", "/Library", "/Users",
+            h,
+            "\(h)/Desktop", "\(h)/Documents", "\(h)/Downloads",
+            "\(h)/Pictures", "\(h)/Movies", "\(h)/Music",
+            "\(h)/Library", "\(h)/Library/Keychains",
+            "\(h)/Library/Mail", "\(h)/Library/Preferences",
+            "\(h)/Library/Application Support",
+            "\(h)/Library/Accounts", "\(h)/Library/Cookies",
+            "\(h)/Library/Containers", "\(h)/Library/Group Containers",
+            "\(h)/.ssh", "\(h)/.gnupg",
+        ]
+    }()
+
+    /// Prefixes that are always off-limits
+    private static let forbiddenPrefixes: [String] = [
+        "/System/", "/usr/", "/bin/", "/sbin/", "/private/var/db/",
+    ]
+
+    /// Validate that a path is safe to delete
+    private static func isSafePath(_ path: String) -> Bool {
+        let resolved = (path as NSString).resolvingSymlinksInPath
+        // Never delete a protected root path
+        if protectedPaths.contains(resolved) { return false }
+        // Never delete anything under forbidden prefixes
+        for prefix in forbiddenPrefixes {
+            if resolved.hasPrefix(prefix) { return false }
+        }
+        // Require minimum depth (at least 3 components: / Users / name / something)
+        let components = resolved.split(separator: "/")
+        if components.count < 3 { return false }
+        return true
+    }
+
+    // MARK: - Memory Pressure Monitoring
+
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+
+    func startMemoryMonitoring() {
+        memoryPressureSource = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .global(qos: .utility)
+        )
+        memoryPressureSource?.setEventHandler { [weak self] in
+            guard let self else { return }
+            let event = self.memoryPressureSource?.data ?? []
+            if event.contains(.critical) {
+                // Emergency: cancel scan immediately
+                self.cancelLock.withLock { $0 = true }
+                self.resetScannedPaths()
+                Task { @MainActor in
+                    self.scanErrors.append("Scan cancelled: system memory pressure critical")
+                }
+            } else if event.contains(.warning) {
+                // Warning: just log it — the autoreleasepool fixes should handle this
+                Task { @MainActor in
+                    self.scanErrors.append("Warning: elevated memory pressure detected")
+                }
+            }
+        }
+        memoryPressureSource?.resume()
+    }
+
+    func stopMemoryMonitoring() {
+        memoryPressureSource?.cancel()
+        memoryPressureSource = nil
+    }
+
+    // MARK: - Deletion Audit Log
+
+    private static func writeDeletionLog(entries: [(path: String, size: Int64, trashedOrDeleted: String)]) {
+        guard !entries.isEmpty else { return }
+        let logDir = "\(home)/Library/Logs/SparkClean"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+
+        let dateStr = ISO8601DateFormatter().string(from: Date())
+        let logPath = "\(logDir)/cleanup-\(dateStr.replacingOccurrences(of: ":", with: "-")).log"
+
+        var log = "SparkClean Deletion Log — \(dateStr)\n"
+        log += String(repeating: "─", count: 60) + "\n"
+        for entry in entries {
+            log += "[\(entry.trashedOrDeleted)] \(formatBytes(entry.size).padding(toLength: 10, withPad: " ", startingAt: 0)) \(entry.path)\n"
+        }
+        log += String(repeating: "─", count: 60) + "\n"
+        log += "Total: \(entries.count) items\n"
+
+        try? log.write(toFile: logPath, atomically: true, encoding: .utf8)
+    }
 
     // MARK: - Settings
 
@@ -334,8 +436,7 @@ class CleanupManager {
         ScanDefinition(name: "Xcode Previews", icon: "rectangle.on.rectangle", color: .pink,
             description: "SwiftUI preview build data — rebuilt automatically",
             group: .developer, safetyLevel: .safe) {
-            ["\(home)/Library/Developer/Xcode/UserData/Previews",
-             "\(home)/Library/Developer/XCPGDevices"]
+            ["\(home)/Library/Developer/Xcode/UserData/Previews"]
         },
 
         ScanDefinition(name: "Xcode Archives", icon: "archivebox", color: .purple,
@@ -426,11 +527,21 @@ class CleanupManager {
         },
 
         // ═══════════ DOCKER ═══════════
+        // NOTE: Docker Desktop Data scan definition REMOVED to prevent double-counting.
+        // The Docker.raw VM disk inside ~/Library/Containers/com.docker.docker/Data
+        // contains ALL images, containers, volumes, and build cache. Showing its
+        // filesystem size PLUS the Docker CLI-reported sizes was double-counting.
+        // Docker cleanup is now handled exclusively via the CLI-based scans below
+        // (Docker Images, Docker Containers, Docker Build Cache) which give accurate
+        // per-resource sizes. Users who want to fully remove Docker can use the Uninstaller.
 
-        ScanDefinition(name: "Docker Desktop Data", icon: "cube.box", color: .blue,
-            description: "Docker VM disk images — contains all images/containers",
-            group: .docker, safetyLevel: .caution, defaultSelected: false) {
-            ["\(home)/Library/Containers/com.docker.docker/Data", "\(home)/.docker"]
+        ScanDefinition(name: "Docker Logs & Config", icon: "cube.box", color: .blue,
+            description: "Docker Desktop logs and config files — safe to clean",
+            group: .docker, safetyLevel: .safe) {
+            ["\(home)/Library/Caches/com.docker.docker",
+             "\(home)/Library/Logs/Docker Desktop",
+             "\(home)/.docker/buildx",
+             "\(home)/.docker/cli-plugins"]
         },
 
         // ═══════════ APPLICATIONS (safe — app caches rebuild) ═══════════
@@ -528,6 +639,74 @@ class CleanupManager {
             ["\(home)/Library/Caches/com.apple.QuickLook.thumbnailcache",
              "\(home)/Library/Caches/com.apple.QuickLookThumbnailing"]
         },
+
+        // ═══════════ AI / ML TOOLS (high impact — models can be huge) ═══════════
+
+        ScanDefinition(name: "HuggingFace Models Cache", icon: "brain", color: .purple,
+            description: "Downloaded ML models — re-downloaded on demand",
+            group: .developer, safetyLevel: .review, defaultSelected: false) {
+            ["\(home)/.cache/huggingface"]
+        },
+
+        ScanDefinition(name: "Ollama Model Cache", icon: "brain.head.profile", color: .green,
+            description: "Ollama model blobs — re-pulled with ollama pull",
+            group: .developer, safetyLevel: .review, defaultSelected: false) {
+            ["\(home)/.ollama/models"]
+        },
+
+        ScanDefinition(name: "LM Studio Models", icon: "cpu.fill", color: .indigo,
+            description: "LM Studio model files — re-downloaded from hub",
+            group: .developer, safetyLevel: .review, defaultSelected: false) {
+            ["\(home)/.cache/lm-studio"]
+        },
+
+        // ═══════════ ADDITIONAL DEVELOPER CACHES ═══════════
+
+        ScanDefinition(name: "Bazel Cache", icon: "hammer.fill", color: .gray,
+            description: "Bazel build system cache — rebuilt on next build",
+            group: .developer, safetyLevel: .safe) {
+            ["\(home)/.cache/bazel", "\(home)/.cache/bazelisk"]
+        },
+
+        ScanDefinition(name: "Deno Cache", icon: "d.circle", color: .teal,
+            description: "Deno module cache — re-downloaded on run",
+            group: .packageManagers, safetyLevel: .safe) {
+            ["\(home)/Library/Caches/deno", "\(home)/.deno"]
+        },
+
+        ScanDefinition(name: "Poetry Cache", icon: "text.book.closed", color: .purple,
+            description: "Poetry Python package cache — re-downloaded on install",
+            group: .packageManagers, safetyLevel: .safe) {
+            ["\(home)/Library/Caches/pypoetry", "\(home)/.cache/pypoetry"]
+        },
+
+        // ═══════════ ADDITIONAL SYSTEM CLEANUP ═══════════
+
+        ScanDefinition(name: "Font Caches", icon: "textformat", color: .gray,
+            description: "Font rendering caches — rebuilt automatically on login",
+            group: .system, safetyLevel: .safe) {
+            ["\(home)/Library/Caches/com.apple.FontRegistry",
+             "/Library/Caches/com.apple.ATS"]
+        },
+
+        ScanDefinition(name: "Speech Data Cache", icon: "waveform", color: .blue,
+            description: "Speech recognition cache — rebuilt when needed",
+            group: .system, safetyLevel: .safe) {
+            ["\(home)/Library/Caches/com.apple.SpeechRecognitionCore"]
+        },
+
+        ScanDefinition(name: "Xcode Playground Cache", icon: "play.rectangle", color: .pink,
+            description: "Swift Playground execution data — rebuilt on run",
+            group: .developer, safetyLevel: .safe) {
+            ["\(home)/Library/Developer/Xcode/UserData/Playgrounds",
+             "\(home)/Library/Developer/XCPGDevices"]
+        },
+
+        ScanDefinition(name: "Provisioning Profiles", icon: "shield.checkered", color: .indigo,
+            description: "iOS/macOS provisioning profiles — re-downloaded from developer portal",
+            group: .developer, safetyLevel: .review, defaultSelected: false) {
+            ["\(home)/Library/MobileDevice/Provisioning Profiles"]
+        },
     ]
 
     // MARK: - Disk Usage
@@ -564,6 +743,7 @@ class CleanupManager {
         }
         cancelLock.withLock { $0 = false }
         resetScannedPaths()
+        startMemoryMonitoring()
 
         fetchDiskUsage()
         checkFullDiskAccess()
@@ -734,6 +914,9 @@ class CleanupManager {
                     )
                 }
             }
+            // Release scan-only data
+            resetScannedPaths()
+            stopMemoryMonitoring()
             return
         }
 
@@ -749,6 +932,9 @@ class CleanupManager {
                 wasPartial: false
             )
         }
+        // Release scan-only data
+        resetScannedPaths()
+        stopMemoryMonitoring()
     }
 
     func cancelScan() { cancelLock.withLock { $0 = true } }
@@ -841,6 +1027,7 @@ class CleanupManager {
                 DispatchQueue.global(qos: .userInitiated).async {
                     let fm = FileManager.default
                     var localErrors: [String] = []
+                    var auditLog: [(path: String, size: Int64, trashedOrDeleted: String)] = []
                     let uid = getuid()
 
                     func isOwnedByUser(_ path: String) -> Bool {
@@ -850,20 +1037,31 @@ class CleanupManager {
                     }
 
                     func deleteItem(at url: URL) {
-                        // Skip files/dirs we can't delete — silently
-                        if !fm.isDeletableFile(atPath: url.path) { return }
+                        let path = url.path
+                        // Safety: reject protected paths
+                        if !Self.isSafePath(path) {
+                            localErrors.append("\(categoryName): Blocked deletion of protected path — \(url.lastPathComponent)")
+                            return
+                        }
+                        // Safety: skip files we don't own
+                        if !isOwnedByUser(path) && !fm.isDeletableFile(atPath: path) { return }
+                        // Skip files/dirs we can't delete
+                        if !fm.isDeletableFile(atPath: path) { return }
+
+                        // Get size for audit log
+                        let fileSize: Int64 = (try? fm.attributesOfItem(atPath: path))?[.size] as? Int64 ?? 0
 
                         if useTrash {
-                            if (try? fm.trashItem(at: url, resultingItemURL: nil)) == nil {
-                                do {
-                                    try fm.removeItem(at: url)
-                                } catch {
-                                    localErrors.append("\(categoryName): Failed to remove \(url.lastPathComponent) — \(error.localizedDescription)")
-                                }
+                            if (try? fm.trashItem(at: url, resultingItemURL: nil)) != nil {
+                                auditLog.append((path: path, size: fileSize, trashedOrDeleted: "TRASH"))
+                            } else {
+                                // Trash failed — do NOT silently fall back to permanent delete
+                                localErrors.append("\(categoryName): Could not move to Trash — \(url.lastPathComponent)")
                             }
                         } else {
                             do {
                                 try fm.removeItem(at: url)
+                                auditLog.append((path: path, size: fileSize, trashedOrDeleted: "DELETE"))
                             } catch {
                                 localErrors.append("\(categoryName): Failed to remove \(url.lastPathComponent) — \(error.localizedDescription)")
                             }
@@ -891,6 +1089,10 @@ class CleanupManager {
                             deleteItem(at: URL(fileURLWithPath: path))
                         }
                     }
+
+                    // Write deletion audit log
+                    Self.writeDeletionLog(entries: auditLog)
+
                     continuation.resume(returning: localErrors)
                 }
             }
@@ -966,15 +1168,16 @@ class CleanupManager {
             return (0, 0)
         }
 
-        for case let fileURL as URL in enumerator {
-            guard let rv = try? fileURL.resourceValues(
-                forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey]
-            ) else { continue }
-            if rv.isRegularFile == true {
-                // Skip files we can't delete
-                if !fm.isDeletableFile(atPath: fileURL.path) { continue }
-                totalSize += Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
-                count += 1
+        while let obj = enumerator.nextObject() {
+            guard let fileURL = obj as? URL else { continue }
+            autoreleasepool {
+                guard let rv = try? fileURL.resourceValues(
+                    forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey]
+                ) else { return }
+                if rv.isRegularFile == true {
+                    totalSize += Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
+                    count += 1
+                }
             }
         }
 
@@ -985,6 +1188,7 @@ class CleanupManager {
         let fm = FileManager.default
         var totalSize: Int64 = 0
         var count = 0
+        let excludedWithSlash = excludedPaths.map { $0 + "/" }
 
         guard let enumerator = fm.enumerator(
             at: URL(fileURLWithPath: path),
@@ -995,20 +1199,23 @@ class CleanupManager {
             return (0, 0)
         }
 
-        for case let fileURL as URL in enumerator {
+        let excludedSet = Set(excludedPaths)
+        while let obj = enumerator.nextObject() {
+            guard let fileURL = obj as? URL else { continue }
             let filePath = fileURL.path
-            // Skip files inside excluded subdirectories
-            if excludedPaths.contains(where: { filePath.hasPrefix($0 + "/") || filePath == $0 }) {
+            // Skip excluded subtrees entirely — skip descendants for performance
+            if excludedSet.contains(filePath) || excludedWithSlash.contains(where: { filePath.hasPrefix($0) }) {
+                enumerator.skipDescendants()
                 continue
             }
-            guard let rv = try? fileURL.resourceValues(
-                forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey]
-            ) else { continue }
-            if rv.isRegularFile == true {
-                // Skip files we can't delete
-                if !fm.isDeletableFile(atPath: filePath) { continue }
-                totalSize += Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
-                count += 1
+            autoreleasepool {
+                guard let rv = try? fileURL.resourceValues(
+                    forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey]
+                ) else { return }
+                if rv.isRegularFile == true {
+                    totalSize += Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
+                    count += 1
+                }
             }
         }
 
@@ -1036,12 +1243,17 @@ class CleanupManager {
                 var totalSize: Int64 = 0
                 var totalCount: Int = 0
 
+                // Pre-compute sorted scanned paths for efficient overlap detection
+                let sortedScanned = scannedSnapshot.sorted()
+
                 for entry in entries {
                     autoreleasepool {
                     let fullPath = (dir as NSString).appendingPathComponent(entry)
                     // Skip entries already covered by specific scans
                     if scannedSnapshot.contains(fullPath) { return }
-                    if scannedSnapshot.contains(where: { $0.hasPrefix(fullPath + "/") || fullPath.hasPrefix($0 + "/") }) { return }
+                    // Efficient overlap check: binary search for child/parent paths
+                    let fullPathSlash = fullPath + "/"
+                    if sortedScanned.contains(where: { $0.hasPrefix(fullPathSlash) || fullPath.hasPrefix($0 + "/") }) { return }
 
                     let (sz, ct) = Self.directorySizeSync(fullPath)
                     if sz > ScanConstants.minCacheSizeBytes {
@@ -1066,7 +1278,7 @@ class CleanupManager {
                     description: "\(paths.count) app caches — safe to remove, rebuilt automatically",
                     group: .system, safetyLevel: .safe,
                     paths: paths, breakdown: Array(sorted.prefix(60)),
-                    deleteChildrenOnly: false,
+                    deleteChildrenOnly: true,
                     size: totalSize, fileCount: totalCount,
                     isSelected: true
                 ))
@@ -1159,25 +1371,32 @@ class CleanupManager {
                 }
 
                 for url in contents {
-                    guard let rv = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey, .contentModificationDateKey]) else { continue }
-                    let modDate = rv.contentModificationDate ?? Date.distantPast
-                    guard modDate < threshold else { continue }
+                    autoreleasepool {
+                        guard let rv = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .totalFileAllocatedSizeKey, .fileSizeKey, .contentModificationDateKey]) else { return }
 
-                    if rv.isRegularFile == true {
-                        let size = Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
-                        if size > 0 {
-                            filePaths.append(url.path)
-                            self.insertScannedPath(url.path)
-                            breakdown.append(PathStat(path: url.path, size: size, fileCount: 1))
-                            totalSize += size
-                        }
-                    } else if rv.isDirectory == true {
-                        let (size, count) = Self.directorySizeSync(url.path)
-                        if size > 0 {
-                            filePaths.append(url.path)
-                            self.insertScannedPath(url.path)
-                            breakdown.append(PathStat(path: url.path, size: size, fileCount: count))
-                            totalSize += size
+                        if rv.isRegularFile == true {
+                            let modDate = rv.contentModificationDate ?? Date.distantPast
+                            guard modDate < threshold else { return }
+                            let size = Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0)
+                            if size > 0 {
+                                filePaths.append(url.path)
+                                self.insertScannedPath(url.path)
+                                breakdown.append(PathStat(path: url.path, size: size, fileCount: 1))
+                                totalSize += size
+                            }
+                        } else if rv.isDirectory == true {
+                            // For directories, check the NEWEST file inside — not the dir's own mod date.
+                            // A directory mod date only updates when direct children are added/removed,
+                            // so it can be stale even when files deep inside are actively used.
+                            let newestDate = Self.newestFileDate(in: url.path) ?? Date.distantPast
+                            guard newestDate < threshold else { return }
+                            let (size, count) = Self.directorySizeSync(url.path)
+                            if size > 0 {
+                                filePaths.append(url.path)
+                                self.insertScannedPath(url.path)
+                                breakdown.append(PathStat(path: url.path, size: size, fileCount: count))
+                                totalSize += size
+                            }
                         }
                     }
                 }
@@ -1189,6 +1408,7 @@ class CleanupManager {
 
                 var sorted = breakdown
                 sorted.sort { $0.size > $1.size }
+                let totalFileCount = sorted.reduce(0) { $0 + $1.fileCount }
 
                 continuation.resume(returning: CleanupCategory(
                     name: "Old Downloads (>\(olderThanDays)d)", icon: "arrow.down.circle.fill", color: .blue,
@@ -1196,7 +1416,7 @@ class CleanupManager {
                     group: .system, safetyLevel: .review,
                     paths: filePaths, breakdown: Array(sorted.prefix(60)),
                     deleteChildrenOnly: false,
-                    size: totalSize, fileCount: filePaths.count,
+                    size: totalSize, fileCount: totalFileCount,
                     isSelected: false
                 ))
             }
@@ -1481,11 +1701,7 @@ class CleanupManager {
         }
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed == "(null)" || trimmed.isEmpty { return nil }
-
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        return formatter.date(from: trimmed)
+        return spotlightDateFormatter.date(from: trimmed)
     }
 
     // MARK: - Docker CLI
@@ -1728,24 +1944,26 @@ class CleanupManager {
         guard let entries = try? fm.contentsOfDirectory(atPath: dir) else { return }
 
         for entry in entries {
-            let fullPath = (dir as NSString).appendingPathComponent(entry)
-            var isDir: ObjCBool = false
-            guard fm.fileExists(atPath: fullPath, isDirectory: &isDir), isDir.boolValue else { continue }
+            autoreleasepool {
+                let fullPath = (dir as NSString).appendingPathComponent(entry)
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: fullPath, isDirectory: &isDir), isDir.boolValue else { return }
 
-            if entry == "node_modules" {
-                let (sz, ct) = directorySizeSync(fullPath)
-                if sz > 1_000_000 {
-                    found.append(fullPath)
-                    breakdown.append(PathStat(path: fullPath, size: sz, fileCount: ct))
-                    totalSize += sz
-                    totalCount += ct
+                if entry == "node_modules" {
+                    let (sz, ct) = directorySizeSync(fullPath)
+                    if sz > 1_000_000 {
+                        found.append(fullPath)
+                        breakdown.append(PathStat(path: fullPath, size: sz, fileCount: ct))
+                        totalSize += sz
+                        totalCount += ct
+                    }
+                } else if !entry.hasPrefix(".") && entry != "Library" {
+                    findNodeModulesRecursive(
+                        in: fullPath, depth: depth + 1, maxDepth: maxDepth, fm: fm,
+                        found: &found, breakdown: &breakdown,
+                        totalSize: &totalSize, totalCount: &totalCount
+                    )
                 }
-            } else if !entry.hasPrefix(".") && entry != "Library" {
-                findNodeModulesRecursive(
-                    in: fullPath, depth: depth + 1, maxDepth: maxDepth, fm: fm,
-                    found: &found, breakdown: &breakdown,
-                    totalSize: &totalSize, totalCount: &totalCount
-                )
             }
         }
     }
@@ -1950,17 +2168,29 @@ class CleanupManager {
 
     private static func hasMatchingApp(name: String, bundleIDs: Set<String>) -> Bool {
         let nameLower = name.lowercased()
-        for bundleID in bundleIDs {
-            let idLower = bundleID.lowercased()
-            // Check if the name is a substring of a bundle ID or vice versa
-            if idLower.contains(nameLower) || nameLower.contains(idLower) { return true }
-        }
-        // Also check if the name (minus domain prefix) matches an app name in the set
-        // e.g. "org.mozilla.firefox" -> check if "firefox" is an app name
+        // Direct match
+        if bundleIDs.contains(where: { $0.lowercased() == nameLower }) { return true }
+
+        // Extract last component of bundle-ID-style names (e.g. "org.mozilla.firefox" -> "firefox")
+        // Only match if the extracted name is specific enough (>= 5 chars) to avoid false positives
         let components = name.components(separatedBy: ".")
-        if components.count >= 3, let appName = components.last, appName.count >= 4 {
-            if bundleIDs.contains(where: { $0.lowercased() == appName.lowercased() }) { return true }
+        if components.count >= 3, let appName = components.last, appName.count >= 5 {
+            let appNameLower = appName.lowercased()
+            for bundleID in bundleIDs {
+                let idComponents = bundleID.lowercased().components(separatedBy: ".")
+                if let idAppName = idComponents.last, idAppName == appNameLower { return true }
+            }
         }
+
+        // Check if any installed bundle ID shares the same domain-reversed prefix
+        // e.g. "com.example.app" matches "com.example.app.helper"
+        if components.count >= 3 {
+            let prefix = components.prefix(3).joined(separator: ".").lowercased()
+            for bundleID in bundleIDs {
+                if bundleID.lowercased().hasPrefix(prefix) { return true }
+            }
+        }
+
         return false
     }
 
@@ -2025,6 +2255,10 @@ class CleanupManager {
                             }
                             guard rv.isRegularFile == true else { return }
                             if isPathScanned(url.path) { return }
+                            // Also skip files inside directories already scanned by other phases
+                            // (e.g., a large file inside a folder flagged by "Old Downloads")
+                            let parentDir = (url.path as NSString).deletingLastPathComponent
+                            if isPathScanned(parentDir) { return }
 
                             let size = Int64(rv.totalFileAllocatedSize ?? 0)
                             guard size >= thresholdBytes else { return }
@@ -2411,7 +2645,8 @@ class CleanupManager {
             "/usr/local/bin",
             "/opt/homebrew/bin"
         ]
-        let excludeDirs: Set<String> = ["Keychains", "Group Containers", "Mail"]
+        let excludeDirs: Set<String> = ["Keychains", "Group Containers", "Mail",
+                                        "Caches", "Containers", "Developer"]
 
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -2426,32 +2661,35 @@ class CleanupManager {
                         options: [.skipsPackageDescendants]
                     ) else { continue }
 
-                    for case let url as URL in enumerator {
-                        // Skip excluded directories
-                        let components = url.pathComponents
-                        if components.contains(where: { excludeDirs.contains($0) }) {
-                            enumerator.skipDescendants()
-                            continue
-                        }
+                    while let obj = enumerator.nextObject() {
+                        guard let url = obj as? URL else { continue }
+                        autoreleasepool {
+                            // Skip excluded directories
+                            let components = url.pathComponents
+                            if components.contains(where: { excludeDirs.contains($0) }) {
+                                enumerator.skipDescendants()
+                                return
+                            }
 
-                        guard let rv = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]),
-                              rv.isSymbolicLink == true else { continue }
+                            guard let rv = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]),
+                                  rv.isSymbolicLink == true else { return }
 
-                        // Detect broken symlink
-                        guard let target = try? fm.destinationOfSymbolicLink(atPath: url.path) else { continue }
-                        let resolvedTarget: String
-                        if target.hasPrefix("/") {
-                            resolvedTarget = target
-                        } else {
-                            resolvedTarget = ((url.path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(target)
-                        }
+                            // Detect broken symlink
+                            guard let target = try? fm.destinationOfSymbolicLink(atPath: url.path) else { return }
+                            let resolvedTarget: String
+                            if target.hasPrefix("/") {
+                                resolvedTarget = target
+                            } else {
+                                resolvedTarget = ((url.path as NSString).deletingLastPathComponent as NSString).appendingPathComponent(target)
+                            }
 
-                        // Skip if target is on external volume
-                        if resolvedTarget.hasPrefix("/Volumes/") { continue }
+                            // Skip if target is on external volume
+                            if resolvedTarget.hasPrefix("/Volumes/") { return }
 
-                        if !fm.fileExists(atPath: resolvedTarget) {
-                            filePaths.append(url.path)
-                            breakdown.append(PathStat(path: url.path, size: 0, fileCount: 1))
+                            if !fm.fileExists(atPath: resolvedTarget) {
+                                filePaths.append(url.path)
+                                breakdown.append(PathStat(path: url.path, size: 0, fileCount: 1))
+                            }
                         }
                     }
                 }
@@ -2475,6 +2713,32 @@ class CleanupManager {
     }
 
     // MARK: - Helpers
+
+    /// Find the newest file modification date inside a directory (for accurate age checks).
+    /// Returns nil if the directory is empty or unreadable.
+    private static func newestFileDate(in path: String) -> Date? {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: URL(fileURLWithPath: path),
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        var newest: Date?
+        var checked = 0
+        while let obj = enumerator.nextObject() {
+            guard let url = obj as? URL else { continue }
+            autoreleasepool {
+                guard let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]),
+                      rv.isRegularFile == true,
+                      let mod = rv.contentModificationDate else { return }
+                if newest == nil || mod > newest! { newest = mod }
+            }
+            checked += 1
+            // Early exit: if we find ANY recent file, the directory is active
+            if checked > 500 { break }
+        }
+        return newest
+    }
 
     static func findDocker() -> String? {
         for path in ["/usr/local/bin/docker", "/opt/homebrew/bin/docker", "/usr/bin/docker"] {
@@ -2684,10 +2948,21 @@ class CleanupManager {
 
     // MARK: - Formatting
 
+    private static let byteFormatter: ByteCountFormatter = {
+        let f = ByteCountFormatter()
+        f.allowedUnits = [.useAll]
+        f.countStyle = .file
+        return f
+    }()
+
     static func formatBytes(_ bytes: Int64) -> String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useAll]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: bytes)
+        byteFormatter.string(fromByteCount: bytes)
     }
+
+    private static let spotlightDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
 }

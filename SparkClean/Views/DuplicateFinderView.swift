@@ -8,6 +8,7 @@
 import SwiftUI
 import AppKit
 import CryptoKit
+import ImageIO
 
 // MARK: - Duplicate Group Model
 
@@ -17,18 +18,7 @@ struct DuplicateGroup: Identifiable {
     let fileSize: Int64
     let paths: [String]
     let isSimilarImage: Bool
-    var wastedSize: Int64 {
-        if isSimilarImage {
-            // For similar images, sum all sizes except the largest
-            let sizes = paths.compactMap { path -> Int64? in
-                guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-                      let size = attrs[.size] as? Int64 else { return nil }
-                return size
-            }.sorted(by: >)
-            return sizes.dropFirst().reduce(0, +)
-        }
-        return fileSize * Int64(paths.count - 1)
-    }
+    let wastedSize: Int64
     var isSelected: Bool = false
 
     init(fileName: String, fileSize: Int64, paths: [String], isSimilarImage: Bool = false) {
@@ -36,6 +26,17 @@ struct DuplicateGroup: Identifiable {
         self.fileSize = fileSize
         self.paths = paths
         self.isSimilarImage = isSimilarImage
+        // Pre-compute wasted size at init time instead of doing filesystem I/O in a computed property
+        if isSimilarImage {
+            let sizes = paths.compactMap { path -> Int64? in
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                      let size = attrs[.size] as? Int64 else { return nil }
+                return size
+            }.sorted(by: >)
+            self.wastedSize = sizes.dropFirst().reduce(0, +)
+        } else {
+            self.wastedSize = fileSize * Int64(paths.count - 1)
+        }
     }
 }
 
@@ -152,9 +153,12 @@ class DuplicateFinderManager {
                         sizeGroups[size, default: []].append((url.path, inode))
                     }
                 }
+
+                // Prune unique sizes after each directory to limit peak memory
+                sizeGroups = sizeGroups.filter { $0.value.count > 1 }
             }
 
-            // Remove unique sizes
+            // Final prune
             sizeGroups = sizeGroups.filter { $0.value.count > 1 }
 
             DispatchQueue.main.async {
@@ -191,10 +195,12 @@ class DuplicateFinderManager {
                 // Compare first 4KB header
                 var headerGroups: [Data: [String]] = [:]
                 for path in candidates {
-                    guard let handle = FileHandle(forReadingAtPath: path) else { continue }
-                    let header = handle.readData(ofLength: 4096)
-                    handle.closeFile()
-                    headerGroups[header, default: []].append(path)
+                    autoreleasepool {
+                        guard let handle = FileHandle(forReadingAtPath: path) else { return }
+                        let header = handle.readData(ofLength: 4096)
+                        handle.closeFile()
+                        headerGroups[header, default: []].append(path)
+                    }
                 }
 
                 for (_, paths) in headerGroups where paths.count > 1 {
@@ -254,15 +260,19 @@ class DuplicateFinderManager {
         let selected = duplicateGroups.filter { $0.isSelected }
         guard !selected.isEmpty else { return }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let fm = FileManager.default
             var cleanedGroupIDs: Set<UUID> = []
 
             for group in selected {
+                // Verify the "original" (kept) file still exists before deleting copies
+                guard fm.fileExists(atPath: group.paths[0]) else { continue }
+
                 // Keep the first file, trash the rest
                 let pathsToRemove = Array(group.paths.dropFirst())
                 var allRemoved = true
                 for path in pathsToRemove {
+                    guard fm.fileExists(atPath: path) else { continue }
                     let url = URL(fileURLWithPath: path)
                     if (try? fm.trashItem(at: url, resultingItemURL: nil)) == nil {
                         allRemoved = false
@@ -274,8 +284,8 @@ class DuplicateFinderManager {
             }
 
             DispatchQueue.main.async {
-                self.duplicateGroups.removeAll { cleanedGroupIDs.contains($0.id) }
-                self.totalWastedSpace = self.duplicateGroups.reduce(0) { $0 + $1.wastedSize }
+                self?.duplicateGroups.removeAll { cleanedGroupIDs.contains($0.id) }
+                self?.totalWastedSpace = self?.duplicateGroups.reduce(0) { $0 + $1.wastedSize } ?? 0
             }
         }
     }
@@ -302,7 +312,7 @@ class DuplicateFinderManager {
 
         var hasher = CryptoKit.SHA256()
         while autoreleasepool(invoking: {
-            let data = handle.readData(ofLength: 65536)
+            let data = handle.readData(ofLength: 262_144) // 256KB — optimal for APFS
             if data.isEmpty { return false }
             hasher.update(data: data)
             return true
@@ -321,12 +331,20 @@ class DuplicateFinderManager {
 
     /// Difference hash (dHash) — compares adjacent pixel brightness in an 9x8 grid.
     /// Produces a 64-bit hash. Similar images produce similar hashes.
+    /// Uses CGImageSource to create a tiny thumbnail WITHOUT loading the full image into memory.
     private static func perceptualHash(ofImage path: String) -> UInt64? {
-        guard let image = NSImage(contentsOfFile: path) else { return nil }
-        guard let tiffData = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData) else { return nil }
+        let url = URL(fileURLWithPath: path) as CFURL
+        guard let source = CGImageSourceCreateWithURL(url, nil) else { return nil }
 
-        // Create a small 9x8 grayscale version
+        // Create a small thumbnail directly — never loads the full image into RAM
+        let thumbOptions: [CFString: Any] = [
+            kCGImageSourceThumbnailMaxPixelSize: 32,
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) else { return nil }
+
+        // Draw into a tiny 9x8 grayscale context
         let width = 9
         let height = 8
         guard let context = CGContext(
@@ -336,7 +354,6 @@ class DuplicateFinderManager {
             bitmapInfo: CGImageAlphaInfo.none.rawValue
         ) else { return nil }
 
-        guard let cgImage = bitmap.cgImage else { return nil }
         context.interpolationQuality = .medium
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
 
@@ -417,15 +434,17 @@ class DuplicateFinderManager {
         // Compute perceptual hashes
         var hashGroups: [UInt64: [(path: String, size: Int64)]] = [:]
         for (idx, file) in imageFiles.enumerated() {
-            if idx % 20 == 0 {
-                let progress = 0.70 + Double(idx) / Double(imageFiles.count) * 0.25
-                DispatchQueue.main.async {
-                    self.scanProgress = min(progress, 0.95)
-                    self.currentScanItem = "Analyzing images (\(idx)/\(imageFiles.count))..."
+            autoreleasepool {
+                if idx % 20 == 0 {
+                    let progress = 0.70 + Double(idx) / Double(imageFiles.count) * 0.25
+                    DispatchQueue.main.async {
+                        self.scanProgress = min(progress, 0.95)
+                        self.currentScanItem = "Analyzing images (\(idx)/\(imageFiles.count))..."
+                    }
                 }
-            }
-            if let hash = Self.perceptualHash(ofImage: file.path) {
-                hashGroups[hash, default: []].append(file)
+                if let hash = Self.perceptualHash(ofImage: file.path) {
+                    hashGroups[hash, default: []].append(file)
+                }
             }
         }
 

@@ -5,10 +5,34 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 ## [Unreleased]
 
 ### Added
+- **cleanup**: Memory pressure monitoring via DispatchSourceMemoryPressure — auto-cancels scans under critical system pressure
+- **cleanup**: Protected path blocklist (30+ paths) preventing deletion of critical system/user directories
+- **cleanup**: Deletion audit log written to ~/Library/Logs/SparkClean/ on every cleanup
+- **cleanup**: Path depth guard rejects any path with fewer than 3 components
+- **cleanup**: 10 new scan categories — HuggingFace Models, Ollama Model Cache, LM Studio Models, Bazel Cache, Deno Cache, Poetry Cache, Font Caches, Speech Data Cache, Xcode Playground Cache, Provisioning Profiles
+- **uninstaller**: Protected path validation to prevent deletion of system paths
 
 ### Changed
+- **cleanup**: selectAll() now excludes caution-level categories for safety
+- **cleanup**: Other App Caches uses deleteChildrenOnly to preserve cache directories
+- **cleanup**: Docker scanning no longer double-counts — removed Docker Desktop Data filesystem scan that overlapped with CLI-based Docker scans
+- **cleanup**: Old Downloads checks newest file date inside directories instead of directory modification date
+- **cleanup**: Large Files scanner checks if parent directory was already scanned by other phases
+- **cleanup**: hasMatchingApp tightened to reduce false positives in orphaned app data detection
+- **cleanup**: Trash failure no longer silently falls back to permanent deletion
 
 ### Fixed
+- **cleanup**: Critical memory leak in directorySizeSync — missing autoreleasepool caused 34GB RAM consumption on large directory scans
+- **cleanup**: Critical memory leak in perceptualHash — replaced NSImage+tiffRepresentation (~150MB/image) with CGImageSource thumbnail (~1KB/image)
+- **cleanup**: scannedPaths set now cleared after scan completes to release retained strings
+- **cleanup**: directorySizeSyncExcluding now calls skipDescendants for excluded paths (performance)
+- **cleanup**: XCPGDevices no longer double-counted in both Xcode Previews and Playground Cache
+- **cleanup**: DuplicateGroup.wastedSize pre-computed at init instead of filesystem I/O on every SwiftUI render
+- **cleanup**: sizeGroups in DuplicateFinderView pruned per-directory to limit peak memory
+- **cleanup**: SHA256 buffer increased from 64KB to 256KB for fewer syscalls
+- **cleanup**: Static ByteCountFormatter and DateFormatter replacing per-call allocation
+- **cleanup**: autoreleasepool added to scanBrokenSymlinks, findNodeModulesRecursive, header comparison
+- **ui**: NotificationCenter observer leak fixed in SplashScreenView
 
 ## [1.0.0] - 2026-03-14
 

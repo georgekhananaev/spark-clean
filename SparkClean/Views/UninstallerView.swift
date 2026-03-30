@@ -344,6 +344,16 @@ class UninstallerManager {
 
     // MARK: - Uninstall
 
+    /// Protected paths that must never be deleted by the uninstaller
+    private static let uninstallerProtectedPaths: Set<String> = {
+        let h = NSHomeDirectory()
+        return [
+            "/", "/System", "/usr", "/bin", "/sbin", "/Applications", "/Library",
+            h, "\(h)/Desktop", "\(h)/Documents", "\(h)/Downloads",
+            "\(h)/Library", "\(h)/Library/Keychains", "\(h)/.ssh", "\(h)/.gnupg",
+        ]
+    }()
+
     func uninstallApp(_ app: AppInfo, trashOnly: Bool = true) async -> Bool {
         // Check if app is running
         let runningApps = NSWorkspace.shared.runningApplications
@@ -360,6 +370,11 @@ class UninstallerManager {
 
                 // Remove related data first
                 for related in app.relatedPaths {
+                    let resolved = (related.path as NSString).resolvingSymlinksInPath
+                    // Safety: never delete protected paths
+                    if Self.uninstallerProtectedPaths.contains(resolved) { continue }
+                    if resolved.split(separator: "/").count < 3 { continue }
+
                     let url = URL(fileURLWithPath: related.path)
                     if trashOnly {
                         if (try? fm.trashItem(at: url, resultingItemURL: nil)) == nil {
