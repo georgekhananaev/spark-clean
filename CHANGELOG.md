@@ -6,6 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 
 ### Added
 - **app**: GitHub update checker — check for new versions from Settings > About or Support menu, download DMG to user-chosen location
+- **settings**: Optional auto-update check on launch (Settings > General > Startup, off by default)
 
 ### Changed
 - **ui**: Contact Support and Report a Bug links now open GitHub issues instead of showing email address

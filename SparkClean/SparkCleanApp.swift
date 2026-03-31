@@ -15,6 +15,7 @@ struct SparkCleanApp: App {
     @State private var updateChecker = UpdateChecker()
     @State private var showUpdateSheet = false
     @AppStorage("trashMonitorEnabled") private var trashMonitorEnabled = false
+    @AppStorage("checkUpdatesOnLaunch") private var checkUpdatesOnLaunch = false
 
     var body: some Scene {
         WindowGroup {
@@ -27,6 +28,14 @@ struct SparkCleanApp: App {
                 .onAppear {
                     if trashMonitorEnabled {
                         trashMonitor.isEnabled = true
+                    }
+                    if checkUpdatesOnLaunch {
+                        Task {
+                            await updateChecker.check()
+                            if updateChecker.updateAvailable {
+                                showUpdateSheet = true
+                            }
+                        }
                     }
                 }
                 .onChange(of: trashMonitorEnabled) { _, newValue in

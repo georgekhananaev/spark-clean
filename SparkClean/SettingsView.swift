@@ -168,6 +168,7 @@ struct SettingsView: View {
     @AppStorage("scanScreenRecordings") private var scanScreenRecordings = true
 @AppStorage("showIntroVideo") private var showIntroVideo = true
     @AppStorage("trashMonitorEnabled") private var trashMonitorEnabled = false
+    @AppStorage("checkUpdatesOnLaunch") private var checkUpdatesOnLaunch = false
 
     // Large Files settings
     @AppStorage("largeFileScanDownloads") private var largeFileScanDownloads = true
@@ -221,6 +222,7 @@ struct SettingsView: View {
         Form {
             Section("Startup") {
                 Toggle("Show intro video on launch", isOn: $showIntroVideo)
+                Toggle("Check for updates on launch", isOn: $checkUpdatesOnLaunch)
             }
 
             Section {
