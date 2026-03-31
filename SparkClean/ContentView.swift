@@ -1155,6 +1155,16 @@ struct WhatsNewView: View {
     @Environment(\.dismiss) private var dismiss
 
     private let releases: [ReleaseNote] = [
+        ReleaseNote(version: "1.2.0", date: "April 2026", notes: [
+            "New Maintenance view — run system maintenance tasks like flushing DNS, purging memory, and rebuilding indexes",
+            "New Startup Manager — view and manage Launch Agents, System Agents, and Daemons",
+            "Smart Trash Monitor — detects apps moved to Trash and offers to clean leftover files",
+            "Drag-and-drop .app files onto Uninstaller for instant analysis",
+            "Per-path selection checkboxes in Uninstaller — choose exactly which related data to remove",
+            "Launch Agent discovery in Uninstaller related data scanning",
+            "Low-confidence items (App Support, Containers) now default to unselected for safety",
+            "TrashMonitor thread safety improvements with OSAllocatedUnfairLock",
+        ]),
         ReleaseNote(version: "1.1.0", date: "March 2026", notes: [
             "Fixed critical memory leak that could cause 34GB+ RAM usage and crashes",
             "Added memory pressure monitoring — scans auto-cancel under critical pressure",

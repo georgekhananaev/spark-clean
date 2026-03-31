@@ -5,14 +5,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 ## [Unreleased]
 
 ### Added
-- **uninstaller**: Smart Trash Monitor — detects apps moved to Trash and offers to clean leftover files (caches, preferences, containers, logs, launch agents)
-- **settings**: "Monitor Trash for uninstalled apps" toggle under Smart Cleanup (off by default)
 
 ### Changed
 
 ### Fixed
+
+## [1.2.0] - 2026-04-01
+
+### Added
+- **app**: New Maintenance view — system maintenance tasks (flush DNS, purge memory, rebuild indexes, etc.)
+- **app**: New Startup Manager — view and manage Launch Agents, System Agents, and Daemons
+- **uninstaller**: Smart Trash Monitor — detects apps moved to Trash and offers to clean leftover files (caches, preferences, containers, logs, launch agents)
+- **uninstaller**: Drag-and-drop `.app` files onto Uninstaller welcome screen for instant analysis
+- **uninstaller**: Per-path selection checkboxes — choose exactly which related data to remove
+- **uninstaller**: Launch Agent discovery in related data scanning
+- **settings**: "Monitor Trash for uninstalled apps" toggle under Smart Cleanup (off by default)
+
+### Changed
+- **uninstaller**: Low-confidence items (App Support, Containers, Group Containers, Home Directory data) default to unselected for safety
+- **uninstaller**: Only selected related paths are deleted during uninstall (previously removed all)
+- **uninstaller**: `calculateAppSize` made accessible for drag-and-drop analysis
+
+### Fixed
 - **uninstaller**: Fixed autoreleasepool leak in dirSizeAndCount (same pattern as the v1.1.0 directorySizeSync fix)
 - **uninstaller**: Eliminated duplicated file enumeration code in KnownAppData and dotfile scanning
+- **trash-monitor**: Thread safety with OSAllocatedUnfairLock replacing bare Set for knownApps
+- **trash-monitor**: Fixed potential retain cycle with `[weak self]` in Task closure
 
 ## [1.1.0] - 2026-03-30
 
