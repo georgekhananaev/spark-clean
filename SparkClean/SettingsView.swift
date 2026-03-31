@@ -522,7 +522,7 @@ struct SettingsView: View {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                         .font(.caption)
-                    Text("You're up to date!")
+                    Text("You're up to date! (v\(updateChecker.latestVersion ?? updateChecker.currentVersion))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -14,6 +14,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 
 ### Fixed
 - **ui**: Intro video no longer replays when minimizing and restoring the app window
+- **settings**: Update check now shows the latest GitHub version in the result
 
 ## [1.2.0] - 2026-04-01
 
