@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+## [1.2.1] - 2026-04-01
+
+### Added
 - **app**: GitHub update checker — check for new versions from Settings > About or Support menu, download DMG to user-chosen location
 - **settings**: Optional auto-update check on launch (Settings > General > Startup, off by default)
 
