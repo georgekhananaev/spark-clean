@@ -1159,6 +1159,14 @@ struct WhatsNewView: View {
     @Environment(\.dismiss) private var dismiss
 
     private let releases: [ReleaseNote] = [
+        ReleaseNote(version: "1.2.1", date: "April 2026", notes: [
+            "Check for Updates — verify your version from Settings > About or Support menu",
+            "Optional auto-update check on launch (Settings > Startup, off by default)",
+            "Download latest DMG directly from GitHub when an update is available",
+            "Contact and bug report links now open GitHub issues instead of email",
+            "Fixed intro video replaying on every minimize/restore",
+            "Privacy policy updated to reflect optional update check",
+        ]),
         ReleaseNote(version: "1.2.0", date: "April 2026", notes: [
             "New Maintenance view — run system maintenance tasks like flushing DNS, purging memory, and rebuilding indexes",
             "New Startup Manager — view and manage Launch Agents, System Agents, and Daemons",

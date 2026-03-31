@@ -1,4 +1,4 @@
-# SparkClean v1.2.0
+# SparkClean v1.2.1
 
 [![GitHub release](https://img.shields.io/github/v/release/georgekhananaev/spark-clean)](https://github.com/georgekhananaev/spark-clean/releases)
 [![License](https://img.shields.io/badge/license-Non--Commercial-blue)](LICENSE)
