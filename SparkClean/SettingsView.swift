@@ -6,6 +6,149 @@
 //
 
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
+
+// MARK: - Update Checker
+
+@Observable
+final class UpdateChecker {
+    var isChecking = false
+    var isDownloading = false
+    var downloadProgress: Double = 0
+    var latestVersion: String?
+    var downloadURL: URL?
+    var errorMessage: String?
+    var checkCompleted = false
+
+    var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+    }
+
+    var updateAvailable: Bool {
+        guard let latest = latestVersion else { return false }
+        return compareVersions(latest, isGreaterThan: currentVersion)
+    }
+
+    private var downloadTask: URLSessionDownloadTask?
+    private var progressObservation: NSKeyValueObservation?
+
+    func check() async {
+        await MainActor.run {
+            isChecking = true
+            errorMessage = nil
+            checkCompleted = false
+        }
+
+        do {
+            let url = URL(string: "https://api.github.com/repos/georgekhananaev/spark-clean/releases/latest")!
+            var request = URLRequest(url: url)
+            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            request.timeoutInterval = 15
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+
+            let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+            let version = release.tagName.hasPrefix("v") ? String(release.tagName.dropFirst()) : release.tagName
+            let dmgAsset = release.assets.first { $0.name.hasSuffix(".dmg") }
+
+            await MainActor.run {
+                latestVersion = version
+                downloadURL = dmgAsset.flatMap { URL(string: $0.browserDownloadURL) }
+                isChecking = false
+                checkCompleted = true
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = "Could not check for updates. Please check your internet connection."
+                isChecking = false
+                checkCompleted = true
+            }
+        }
+    }
+
+    func downloadUpdate() {
+        guard let url = downloadURL, let version = latestVersion else { return }
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "SparkClean-\(version).dmg"
+        panel.allowedContentTypes = [.diskImage]
+
+        guard panel.runModal() == .OK, let saveURL = panel.url else { return }
+
+        isDownloading = true
+        downloadProgress = 0
+
+        let task = URLSession.shared.downloadTask(with: url) { [weak self] tempURL, _, error in
+            DispatchQueue.main.async {
+                self?.isDownloading = false
+
+                guard let tempURL, error == nil else {
+                    self?.errorMessage = "Download failed. Please try again."
+                    return
+                }
+
+                do {
+                    if FileManager.default.fileExists(atPath: saveURL.path) {
+                        try FileManager.default.removeItem(at: saveURL)
+                    }
+                    try FileManager.default.moveItem(at: tempURL, to: saveURL)
+                    NSWorkspace.shared.activateFileViewerSelecting([saveURL])
+                } catch {
+                    self?.errorMessage = "Could not save the file."
+                }
+            }
+        }
+
+        progressObservation = task.progress.observe(\.fractionCompleted) { [weak self] progress, _ in
+            DispatchQueue.main.async {
+                self?.downloadProgress = progress.fractionCompleted
+            }
+        }
+
+        downloadTask = task
+        task.resume()
+    }
+
+    private func compareVersions(_ a: String, isGreaterThan b: String) -> Bool {
+        let aParts = a.split(separator: ".").compactMap { Int($0) }
+        let bParts = b.split(separator: ".").compactMap { Int($0) }
+
+        for i in 0..<max(aParts.count, bParts.count) {
+            let aVal = i < aParts.count ? aParts[i] : 0
+            let bVal = i < bParts.count ? bParts[i] : 0
+            if aVal > bVal { return true }
+            if aVal < bVal { return false }
+        }
+        return false
+    }
+}
+
+private struct GitHubRelease: Codable {
+    let tagName: String
+    let assets: [GitHubAsset]
+
+    enum CodingKeys: String, CodingKey {
+        case tagName = "tag_name"
+        case assets
+    }
+}
+
+private struct GitHubAsset: Codable {
+    let name: String
+    let browserDownloadURL: String
+    let size: Int
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case browserDownloadURL = "browser_download_url"
+        case size
+    }
+}
 
 struct SettingsView: View {
     @AppStorage("scanNodeModules") private var scanNodeModules = true
@@ -273,6 +416,8 @@ struct SettingsView: View {
 
     // MARK: About
 
+    @State private var updateChecker = UpdateChecker()
+
     private var aboutTab: some View {
         VStack(spacing: 14) {
             Spacer()
@@ -301,13 +446,16 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
+            // Update checker
+            updateCheckerView
+
             HStack(spacing: 16) {
-                Link("Contact Support", destination: URL(string: "mailto:george@khananaev.com")!)
+                Link("Contact Support", destination: URL(string: "https://github.com/georgekhananaev/spark-clean/issues")!)
                     .font(.caption)
 
                 Text("·").foregroundStyle(.tertiary)
 
-                Link("Report a Bug", destination: URL(string: "mailto:george@khananaev.com?subject=SparkClean%20Bug%20Report")!)
+                Link("Report a Bug", destination: URL(string: "https://github.com/georgekhananaev/spark-clean/issues")!)
                     .font(.caption)
             }
 
@@ -324,6 +472,66 @@ struct SettingsView: View {
             Spacer().frame(height: 8)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var updateCheckerView: some View {
+        if updateChecker.isChecking {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Checking for updates...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else if updateChecker.isDownloading {
+            VStack(spacing: 6) {
+                ProgressView(value: updateChecker.downloadProgress)
+                    .frame(width: 200)
+                Text("Downloading... \(Int(updateChecker.downloadProgress * 100))%")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else if updateChecker.checkCompleted {
+            if let error = updateChecker.errorMessage {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if updateChecker.updateAvailable {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("v\(updateChecker.latestVersion!) available")
+                        .font(.callout)
+                        .fontWeight(.medium)
+                    Button("Download") {
+                        updateChecker.downloadUpdate()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                    Text("You're up to date!")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            Button("Check for Updates") {
+                Task { await updateChecker.check() }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
     }
 }
 

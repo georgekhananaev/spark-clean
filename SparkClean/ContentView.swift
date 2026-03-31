@@ -9,6 +9,9 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// Tracks whether the intro video has played this app session (survives view re-creation).
+private var _introPlayedThisSession = false
+
 // MARK: - Main Content View
 
 struct ContentView: View {
@@ -25,8 +28,8 @@ struct ContentView: View {
     @State private var showHelpSheet = false
     @State private var showPrivacyPolicy = false
     @State private var showCleanErrors = false
-    @State private var introPlayed = false
     @AppStorage("showIntroVideo") private var showIntroVideo = true
+    @State private var introPlayed = _introPlayedThisSession
 
     private func generateAndShowReport(verbose: Bool) {
         exportVerbose = verbose
@@ -613,6 +616,7 @@ struct DashboardView: View {
                 SplashScreenView {
                     withAnimation(.easeOut(duration: 0.4)) {
                         introPlayed = true
+                        _introPlayedThisSession = true
                     }
                 }
             }
@@ -1263,7 +1267,7 @@ struct HelpView: View {
                         "**Cmd+R** — Scan\n**Cmd+E** — Export Report\n**Cmd+Shift+A** — Select All\n**Cmd+Shift+D** — Deselect All\n**Cmd+Shift+S** — Select Safe Only")
 
                     helpSection("Contact",
-                        "Email: george@khananaev.com")
+                        "Report issues or get help at:\ngithub.com/georgekhananaev/spark-clean/issues")
                 }
             }
         }
@@ -1308,7 +1312,7 @@ struct PrivacyPolicyView: View {
                         "SparkClean does NOT collect, transmit, or store any personal data. All scanning and cleanup operations happen entirely on your device.")
 
                     policySection("Network Access",
-                        "SparkClean makes NO network requests. The app works completely offline. No analytics, no telemetry, no tracking.")
+                        "SparkClean works offline by default. The only network request is an optional update check (Settings > About) that contacts GitHub to compare your version with the latest release. No analytics, no telemetry, no tracking.")
 
                     policySection("File Access",
                         "SparkClean reads file metadata (sizes, dates) to identify reclaimable space. It only deletes files you explicitly select and confirm. Files are moved to Trash by default.")
@@ -1317,7 +1321,7 @@ struct PrivacyPolicyView: View {
                         "SparkClean does not integrate with any third-party services, advertising networks, or analytics platforms.")
 
                     policySection("Contact",
-                        "For questions about this privacy policy, contact george@khananaev.com")
+                        "For questions about this privacy policy, visit github.com/georgekhananaev/spark-clean/issues")
                 }
             }
         }

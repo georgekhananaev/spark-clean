@@ -12,6 +12,8 @@ import AppKit
 struct SparkCleanApp: App {
     @State private var showCustomAbout = false
     @State private var trashMonitor = TrashMonitor()
+    @State private var updateChecker = UpdateChecker()
+    @State private var showUpdateSheet = false
     @AppStorage("trashMonitorEnabled") private var trashMonitorEnabled = false
 
     var body: some Scene {
@@ -32,6 +34,9 @@ struct SparkCleanApp: App {
                 }
                 .sheet(item: $trashMonitor.lastDetectedApp) { detected in
                     TrashLeftoverSheet(detected: detected, trashMonitor: trashMonitor)
+                }
+                .sheet(isPresented: $showUpdateSheet) {
+                    UpdateCheckSheet(updateChecker: updateChecker)
                 }
         }
         .defaultSize(width: 960, height: 680)
@@ -110,6 +115,13 @@ struct SparkCleanApp: App {
 
                 Button("What's New") {
                     NotificationCenter.default.post(name: .showWhatsNew, object: nil)
+                }
+
+                Divider()
+
+                Button("Check for Updates...") {
+                    showUpdateSheet = true
+                    Task { await updateChecker.check() }
                 }
             }
 
@@ -384,5 +396,90 @@ struct TrashLeftoverSheet: View {
                 isCleaning = false
             }
         }
+    }
+}
+
+// MARK: - Update Check Sheet (from menu)
+
+struct UpdateCheckSheet: View {
+    @Bindable var updateChecker: UpdateChecker
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.title2)
+                    .foregroundStyle(.blue)
+                Text("Software Update")
+                    .font(.title3.bold())
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            Spacer()
+
+            if updateChecker.isChecking {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.regular)
+                    Text("Checking for updates...")
+                        .foregroundStyle(.secondary)
+                }
+            } else if updateChecker.isDownloading {
+                VStack(spacing: 12) {
+                    ProgressView(value: updateChecker.downloadProgress)
+                        .frame(width: 250)
+                    Text("Downloading... \(Int(updateChecker.downloadProgress * 100))%")
+                        .foregroundStyle(.secondary)
+                }
+            } else if updateChecker.checkCompleted {
+                if let error = updateChecker.errorMessage {
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.orange)
+                        Text(error)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button("Try Again") {
+                            Task { await updateChecker.check() }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                } else if updateChecker.updateAvailable {
+                    VStack(spacing: 12) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.green)
+                        Text("SparkClean v\(updateChecker.latestVersion!) is available")
+                            .font(.headline)
+                        Text("You're currently on v\(updateChecker.currentVersion)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Download Update") {
+                            updateChecker.downloadUpdate()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                } else {
+                    VStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.green)
+                        Text("You're up to date!")
+                            .font(.headline)
+                        Text("SparkClean v\(updateChecker.currentVersion) is the latest version")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Spacer()
+        }
+        .padding(24)
+        .frame(width: 380, height: 260)
     }
 }

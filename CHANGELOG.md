@@ -5,10 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 ## [Unreleased]
 
 ### Added
+- **app**: GitHub update checker — check for new versions from Settings > About or Support menu, download DMG to user-chosen location
 
 ### Changed
+- **ui**: Contact Support and Report a Bug links now open GitHub issues instead of showing email address
+- **ui**: Privacy policy updated to reflect optional update check network request
 
 ### Fixed
+- **ui**: Intro video no longer replays when minimizing and restoring the app window
 
 ## [1.2.0] - 2026-04-01
 
