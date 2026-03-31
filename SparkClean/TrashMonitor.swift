@@ -8,6 +8,7 @@
 import Foundation
 import AppKit
 import UserNotifications
+import os
 
 /// Lightweight Trash monitor that detects when .app bundles are moved to Trash
 /// and offers to clean leftover files. Uses kernel-level DispatchSource for
@@ -28,7 +29,7 @@ final class TrashMonitor {
 
     private var source: DispatchSourceFileSystemObject?
     private var trashFD: Int32 = -1
-    private var knownApps: Set<String> = []
+    private let knownAppsLock = OSAllocatedUnfairLock(initialState: Set<String>())
     private let scanQueue = DispatchQueue(label: "gk.SparkClean.trashMonitor", qos: .utility)
 
     struct DetectedTrashedApp: Identifiable {
@@ -57,7 +58,8 @@ final class TrashMonitor {
         let trashPath = NSHomeDirectory() + "/.Trash"
 
         // Snapshot current .app bundles so we only trigger on new ones
-        knownApps = currentTrashApps(at: trashPath)
+        let snapshot = currentTrashApps(at: trashPath)
+        knownAppsLock.withLock { $0 = snapshot }
 
         trashFD = open(trashPath, O_EVTONLY)
         guard trashFD >= 0 else { return }
@@ -90,7 +92,7 @@ final class TrashMonitor {
     func stop() {
         source?.cancel()
         source = nil
-        knownApps.removeAll()
+        knownAppsLock.withLock { $0.removeAll() }
     }
 
     deinit {
@@ -102,8 +104,9 @@ final class TrashMonitor {
     private func handleTrashChange() {
         let trashPath = NSHomeDirectory() + "/.Trash"
         let current = currentTrashApps(at: trashPath)
-        let newApps = current.subtracting(knownApps)
-        knownApps = current
+        let previous = knownAppsLock.withLock { $0 }
+        let newApps = current.subtracting(previous)
+        knownAppsLock.withLock { $0 = current }
 
         for appPath in newApps {
             scanLeftovers(for: appPath)
@@ -214,8 +217,8 @@ final class TrashMonitor {
             totalSize: totalSize
         )
 
-        Task { @MainActor in
-            self.lastDetectedApp = detected
+        Task { @MainActor [weak self] in
+            self?.lastDetectedApp = detected
         }
 
         sendNotification(appName: appName, size: totalSize)

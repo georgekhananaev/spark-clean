@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Uninstaller Manager
 
@@ -138,7 +139,7 @@ class UninstallerManager {
 
     // MARK: - Calculate App Size + Related Data
 
-    private func calculateAppSize(_ app: AppInfo) async -> AppInfo {
+    func calculateAppSize(_ app: AppInfo) async -> AppInfo {
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let fm = FileManager.default
@@ -238,6 +239,22 @@ class UninstallerManager {
                     }
                 }
 
+                // Launch Agents (background processes)
+                let launchAgentDirs = ["\(home)/Library/LaunchAgents", "/Library/LaunchAgents"]
+                for dir in launchAgentDirs {
+                    if let entries = try? fm.contentsOfDirectory(atPath: dir) {
+                        for entry in entries where entry.hasSuffix(".plist") {
+                            let matches = (!bundleID.isEmpty && entry.contains(bundleID)) ||
+                                          entry.lowercased().contains(appName.lowercased())
+                            if matches {
+                                let agentPath = (dir as NSString).appendingPathComponent(entry)
+                                let sz = (try? fm.attributesOfItem(atPath: agentPath))?[.size] as? Int64 ?? 0
+                                related.append(RelatedPath(path: agentPath, category: "Launch Agent", size: sz, fileCount: 1))
+                            }
+                        }
+                    }
+                }
+
                 // Application Support by app name (some apps use name instead of bundle ID)
                 if !appName.isEmpty {
                     let supportByName = "\(home)/Library/Application Support/\(appName)"
@@ -306,6 +323,12 @@ class UninstallerManager {
                     }
                 }
 
+                // Set default selection: high-confidence items ON, low-confidence OFF
+                let lowConfidenceCategories: Set<String> = ["App Support", "Container", "Group Container", "Possible App Data (Home Directory)"]
+                for i in related.indices {
+                    related[i].isSelected = !lowConfidenceCategories.contains(related[i].category)
+                }
+
                 info.relatedPaths = related.sorted { $0.size > $1.size }
                 info.totalRelatedSize = related.reduce(0) { $0 + $1.size }
 
@@ -340,8 +363,8 @@ class UninstallerManager {
                 let fm = FileManager.default
                 var success = true
 
-                // Remove related data first
-                for related in app.relatedPaths {
+                // Remove only selected related data
+                for related in app.relatedPaths where related.isSelected {
                     let resolved = (related.path as NSString).resolvingSymlinksInPath
                     // Safety: never delete protected paths
                     if Self.uninstallerProtectedPaths.contains(resolved) { continue }
@@ -490,6 +513,7 @@ struct UninstallerView: View {
     @State private var exportReport = ""
     @State private var isGeneratingReport = false
     @State private var lastUninstalledApp: String? = nil
+    @State private var isDropTargeted = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -727,6 +751,14 @@ struct UninstallerView: View {
                             let isWarning = isLarge || hasSafetyNote || isPossibleData
 
                             HStack(spacing: 12) {
+                                // Per-path selection checkbox
+                                if let appIdx = uninstaller.apps.firstIndex(where: { $0.id == app.id }),
+                                   let pathIdx = uninstaller.apps[appIdx].relatedPaths.firstIndex(where: { $0.id == related.id }) {
+                                    Toggle("", isOn: $uninstaller.apps[appIdx].relatedPaths[pathIdx].isSelected)
+                                        .toggleStyle(.checkbox)
+                                        .controlSize(.small)
+                                }
+
                                 Image(systemName: isWarning ? "exclamationmark.triangle.fill" : iconForCategory(related.category))
                                     .foregroundStyle(isWarning ? .orange : .secondary)
                                     .frame(width: 20)
@@ -907,16 +939,18 @@ struct UninstallerView: View {
     private var welcomeSection: some View {
         VStack(spacing: 24) {
             Spacer()
-            Image(systemName: "trash.square.fill")
+            Image(systemName: isDropTargeted ? "app.badge.checkmark" : "trash.square.fill")
                 .font(.system(size: 64))
                 .foregroundStyle(
-                    LinearGradient(colors: [.red, .orange], startPoint: .topLeading, endPoint: .bottomTrailing)
+                    LinearGradient(colors: isDropTargeted ? [.green, .teal] : [.red, .orange],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
                 )
+                .animation(.easeInOut(duration: 0.2), value: isDropTargeted)
             VStack(spacing: 10) {
-                Text("App Uninstaller")
+                Text(isDropTargeted ? "Drop to Analyze" : "App Uninstaller")
                     .font(.title2)
                     .fontWeight(.bold)
-                Text("Scan your Mac to find all installed apps and their\nrelated data. Completely remove apps with one click.")
+                Text("Scan your Mac to find all installed apps and their\nrelated data. Or **drag an .app here** to analyze it instantly.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -924,6 +958,23 @@ struct UninstallerView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, url.pathExtension == "app" else { return }
+                Task { @MainActor in
+                    let bundle = Bundle(url: url)
+                    let bundleID = bundle?.bundleIdentifier ?? ""
+                    let appName = url.deletingPathExtension().lastPathComponent
+                    let info = AppInfo(name: appName, bundleID: bundleID, path: url.path, icon: NSWorkspace.shared.icon(forFile: url.path))
+                    let sized = await uninstaller.calculateAppSize(info)
+                    uninstaller.apps = [sized]
+                    uninstaller.scanComplete = true
+                    selectedApp = sized
+                }
+            }
+            return true
+        }
     }
 }
 

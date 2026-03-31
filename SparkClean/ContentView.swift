@@ -75,6 +75,10 @@ struct ContentView: View {
                     UninstallerView()
                 case .duplicateFinder:
                     DuplicateFinderView()
+                case .maintenance:
+                    MaintenanceView()
+                case .startupManager:
+                    StartupManagerView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -229,6 +233,24 @@ struct ContentView: View {
                     isSelected: selectedSidebar == .duplicateFinder
                 ) {
                     selectedSidebar = .duplicateFinder
+                }
+
+                SidebarRow(
+                    label: "Maintenance",
+                    icon: "wrench.and.screwdriver",
+                    iconColor: .orange,
+                    isSelected: selectedSidebar == .maintenance
+                ) {
+                    selectedSidebar = .maintenance
+                }
+
+                SidebarRow(
+                    label: "Startup Items",
+                    icon: "bolt.circle",
+                    iconColor: .yellow,
+                    isSelected: selectedSidebar == .startupManager
+                ) {
+                    selectedSidebar = .startupManager
                 }
             }
         }

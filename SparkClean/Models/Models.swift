@@ -201,6 +201,8 @@ enum SidebarItem: Hashable {
     case group(CategoryGroup)
     case uninstaller
     case duplicateFinder
+    case maintenance
+    case startupManager
 }
 
 // MARK: - App Info (Uninstaller)
@@ -230,7 +232,12 @@ struct RelatedPath: Identifiable {
     let category: String
     let size: Int64
     let fileCount: Int
+    var isSelected: Bool = true
 }
+
+// MARK: - Sidebar Items
+
+
 
 enum AppSortOrder: String, CaseIterable {
     case name = "Name"
