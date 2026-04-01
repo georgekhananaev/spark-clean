@@ -180,12 +180,6 @@ struct ContentView: View {
 
     @ViewBuilder
     private var sidebarContent: some View {
-        TextField("Filter...", text: $manager.searchQuery)
-            .textFieldStyle(.roundedBorder)
-            .padding(.horizontal, 12)
-            .padding(.top, 12)
-            .padding(.bottom, 6)
-
         List {
             Section {
                 SidebarRow(
@@ -361,10 +355,12 @@ struct DashboardView: View {
                     VStack(spacing: 20) {
                         if let disk = manager.diskUsage {
                             DiskUsageCardView(disk: disk, reclaimable: manager.overallSize)
+                                .transition(.opacity.combined(with: .scale(scale: 0.95)))
                         }
 
                         if manager.categories.contains(where: { $0.safetyLevel == .safe && $0.isSelected }) {
                             smartRecommendation
+                                .transition(.move(edge: .top).combined(with: .opacity))
                         }
 
                         summaryStatsGrid
@@ -374,12 +370,17 @@ struct DashboardView: View {
                     .padding(20)
                 }
                 .background(Color(nsColor: .controlBackgroundColor))
+                .transition(.opacity)
             } else if manager.isScanning {
                 scanningSection
+                    .transition(.opacity)
             } else {
                 welcomeSection
+                    .transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: 0.3), value: manager.scanComplete)
+        .animation(.easeInOut(duration: 0.3), value: manager.isScanning)
     }
 
     // MARK: Header

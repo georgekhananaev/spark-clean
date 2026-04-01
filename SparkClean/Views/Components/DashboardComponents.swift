@@ -53,6 +53,7 @@ struct DiskUsageCardView: View {
                                 .frame(width: max(0, geo.size.width * CGFloat(reclaimable) / CGFloat(max(1, disk.totalSpace))))
                         }
                     }
+                    .animation(.easeInOut(duration: 0.5), value: reclaimable)
                 }
             }
             .frame(height: 20)
@@ -108,6 +109,8 @@ struct StatCard: View {
                 .foregroundStyle(color)
             Text(value)
                 .font(.system(size: 18, weight: .bold, design: .rounded))
+                .contentTransition(.numericText())
+                .animation(.easeInOut(duration: 0.3), value: value)
             Text(title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -144,6 +147,7 @@ struct TopCategoryRow: View {
                 RoundedRectangle(cornerRadius: 4)
                     .fill(category.color.gradient)
                     .frame(width: max(4, geo.size.width * CGFloat(category.size) / CGFloat(max(1, maxSize))))
+                    .animation(.easeInOut(duration: 0.4), value: category.size)
             }
             .frame(height: 16)
 
@@ -203,6 +207,7 @@ struct GroupCard: View {
                 RoundedRectangle(cornerRadius: 14)
                     .stroke(isHovered ? group.color.opacity(0.3) : .clear, lineWidth: 1)
             )
+            .animation(.easeInOut(duration: 0.2), value: isHovered)
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
@@ -296,6 +301,7 @@ struct SidebarRow: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
                 .padding(.horizontal, 4)
+                .animation(.easeInOut(duration: 0.15), value: isSelected)
         )
     }
 }
