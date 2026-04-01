@@ -18,6 +18,7 @@ struct MaintenanceTask: Identifiable {
     let requiresAdmin: Bool
     let warning: String?
     let command: () -> (Bool, String)
+    var estimate: String? = nil
 
     enum Status: Equatable {
         case idle
@@ -31,7 +32,7 @@ struct MaintenanceTask: Identifiable {
 
 @Observable
 class MaintenanceManager {
-    var tasks: [(task: MaintenanceTask, status: MaintenanceTask.Status)] = []
+    var tasks: [(task: MaintenanceTask, status: MaintenanceTask.Status, isSelected: Bool)] = []
     var isRunningAll = false
     var tmSnapshotCount: Int = 0
     var tmSnapshotSize: Int64 = 0
@@ -107,10 +108,10 @@ class MaintenanceManager {
 
             // Estimate Spotlight index size (~0.5% of used space, typically 1-5 GB)
             var spotlightEst: Int64 = 0
-            if let output = CleanupManager.runCommand("/usr/sbin/diskutil", arguments: ["info", "/"]) {
+            if let output = CleanupManager.runCommand("/usr/sbin/diskutil", arguments: ["info", "/System/Volumes/Data"]) {
                 for line in output.components(separatedBy: "\n") {
-                    if line.contains("Capacity In Use") || line.contains("Used Space") {
-                        if let range = line.range(of: #"\d+ B "#, options: .regularExpression) {
+                    if line.contains("Volume Used Space") {
+                        if let range = line.range(of: #"\((\d+) Bytes\)"#, options: .regularExpression) {
                             let digits = String(line[range]).filter(\.isNumber)
                             if let usedBytes = Int64(digits), usedBytes > 0 {
                                 spotlightEst = usedBytes / 200 // ~0.5% of used space
@@ -120,13 +121,33 @@ class MaintenanceManager {
                 }
             }
 
-            DispatchQueue.main.async {
-                self?.tmSnapshotCount = snapshotCount
-                self?.tmSnapshotSize = snapshotBytes
-                self?.purgeableSpace = purgeable
-                self?.spotlightSize = spotlightEst
-                self?.containerDisk = diskID
-                self?.isEstimating = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.tmSnapshotCount = snapshotCount
+                self.tmSnapshotSize = snapshotBytes
+                self.purgeableSpace = purgeable
+                self.spotlightSize = spotlightEst
+                self.containerDisk = diskID
+                self.isEstimating = false
+
+                // Update per-task estimates
+                for i in self.tasks.indices {
+                    switch self.tasks[i].task.name {
+                    case "Clear Time Machine Snapshots":
+                        self.tasks[i].task.estimate = snapshotCount > 0
+                            ? "\(snapshotCount) snapshot\(snapshotCount == 1 ? "" : "s") (~\(CleanupManager.formatBytes(snapshotBytes)))"
+                            : "No snapshots found"
+                    case "Free APFS Purgeable Space":
+                        self.tasks[i].task.estimate = purgeable > 0
+                            ? "~\(CleanupManager.formatBytes(purgeable)) purgeable"
+                            : "Already optimized"
+                    case "Rebuild Spotlight Index":
+                        self.tasks[i].task.estimate = spotlightEst > 0
+                            ? "Index ~\(CleanupManager.formatBytes(spotlightEst))"
+                            : nil
+                    default: break
+                    }
+                }
             }
         }
     }
@@ -142,7 +163,7 @@ class MaintenanceManager {
                     let r1 = CleanupManager.runCommand("/usr/bin/dscacheutil", arguments: ["-flushcache"])
                     return (true, r1 ?? "DNS cache flushed")
                 }
-            ), status: .idle),
+            ), status: .idle, isSelected: false),
 
             (task: MaintenanceTask(
                 name: "Reset QuickLook Cache",
@@ -152,7 +173,7 @@ class MaintenanceManager {
                     let r = CleanupManager.runCommand("/usr/bin/qlmanage", arguments: ["-r", "cache"])
                     return (r != nil, r ?? "QuickLook cache reset")
                 }
-            ), status: .idle),
+            ), status: .idle, isSelected: false),
 
             (task: MaintenanceTask(
                 name: "Compact Launch Services",
@@ -164,7 +185,7 @@ class MaintenanceManager {
                     _ = CleanupManager.runCommand("/usr/bin/killall", arguments: ["Finder"])
                     return (true, "Launch Services compacted, Finder restarted")
                 }
-            ), status: .idle),
+            ), status: .idle, isSelected: false),
 
             (task: MaintenanceTask(
                 name: "Clear Font Cache",
@@ -175,7 +196,7 @@ class MaintenanceManager {
                     let r = CleanupManager.runCommand("/usr/bin/atsutil", arguments: ["databases", "-removeUser"])
                     return (r != nil, r ?? "User font cache cleared")
                 }
-            ), status: .idle),
+            ), status: .idle, isSelected: false),
 
             // Requires admin
             (task: MaintenanceTask(
@@ -191,7 +212,7 @@ class MaintenanceManager {
                     }
                     return (true, "mDNSResponder restarted")
                 }
-            ), status: .idle),
+            ), status: .idle, isSelected: false),
 
             (task: MaintenanceTask(
                 name: "Rebuild Spotlight Index",
@@ -207,7 +228,7 @@ class MaintenanceManager {
                     }
                     return (true, "Spotlight reindex started — will complete in the background")
                 }
-            ), status: .idle),
+            ), status: .idle, isSelected: false),
 
             (task: MaintenanceTask(
                 name: "Clear Time Machine Snapshots",
@@ -241,7 +262,7 @@ class MaintenanceManager {
                     }
                     return (true, output.isEmpty ? "Snapshots thinned successfully" : output)
                 }
-            ), status: .idle),
+            ), status: .idle, isSelected: false),
 
             (task: MaintenanceTask(
                 name: "Free APFS Purgeable Space",
@@ -267,7 +288,7 @@ class MaintenanceManager {
                     }
                     return (true, "APFS defragmentation enabled — space will be reclaimed in the background")
                 }
-            ), status: .idle),
+            ), status: .idle, isSelected: false),
         ]
     }
 
@@ -297,27 +318,59 @@ class MaintenanceManager {
         }
     }
 
-    func runAll() {
-        isRunningAll = true
-        let nonAdminCommands: [(Int, () -> (Bool, String))] = tasks.indices
-            .filter { !tasks[$0].task.requiresAdmin }
-            .map { ($0, tasks[$0].task.command) }
+    var selectedCount: Int {
+        tasks.filter(\.isSelected).count
+    }
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            for (i, command) in nonAdminCommands {
-                DispatchQueue.main.async { self?.tasks[i].status = .running }
-                let (success, message) = command()
-                DispatchQueue.main.async {
-                    self?.tasks[i].status = success ? .success(message) : .failed(message)
+    func runSelected() {
+        isRunningAll = true
+        let selectedIndices = tasks.indices.filter { tasks[$0].isSelected }
+
+        // Split into non-admin (run on background) and admin (run on main)
+        let nonAdmin = selectedIndices.filter { !tasks[$0].task.requiresAdmin }
+        let admin = selectedIndices.filter { tasks[$0].task.requiresAdmin }
+
+        Task { [weak self] in
+            // Run non-admin tasks on background thread
+            if !nonAdmin.isEmpty {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        for i in nonAdmin {
+                            guard let self else { break }
+                            let command = self.tasks[i].task.command
+                            DispatchQueue.main.async { self.tasks[i].status = .running }
+                            let (success, message) = command()
+                            DispatchQueue.main.async {
+                                self.tasks[i].status = success ? .success(message) : .failed(message)
+                            }
+                        }
+                        continuation.resume()
+                    }
                 }
             }
-            DispatchQueue.main.async { self?.isRunningAll = false }
+
+            // Run admin tasks on main thread (NSAppleScript requirement)
+            for i in admin {
+                guard let self else { break }
+                await MainActor.run { self.tasks[i].status = .running }
+                let command = self.tasks[i].task.command
+                let (success, message) = await MainActor.run { command() }
+                await MainActor.run {
+                    self.tasks[i].status = success ? .success(message) : .failed(message)
+                    let isSpaceRecovery = self.tasks[i].task.name == "Clear Time Machine Snapshots" ||
+                                          self.tasks[i].task.name == "Free APFS Purgeable Space"
+                    if isSpaceRecovery && success { self.estimateReclaimableSpace() }
+                }
+            }
+
+            await MainActor.run { self?.isRunningAll = false }
         }
     }
 
     func resetAll() {
         for i in tasks.indices {
             tasks[i].status = .idle
+            tasks[i].isSelected = false
         }
     }
 }
@@ -326,6 +379,7 @@ class MaintenanceManager {
 
 struct MaintenanceView: View {
     @State private var manager = MaintenanceManager()
+    @State private var showRunConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -334,23 +388,23 @@ struct MaintenanceView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("System Maintenance")
                         .font(.title2.bold())
-                    Text("Run Apple's built-in maintenance commands with one click")
+                    Text("Select tasks to run, then click Run Selected")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Run All (Safe)") {
-                    manager.runAll()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(manager.isRunningAll)
-                .help("Runs all tasks that don't require admin password")
 
                 if manager.tasks.contains(where: { $0.status != .idle }) {
                     Button("Reset") {
                         manager.resetAll()
                     }
                 }
+
+                Button("Run Selected (\(manager.selectedCount))") {
+                    showRunConfirmation = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(manager.selectedCount == 0 || manager.isRunningAll)
             }
             .padding()
 
@@ -366,10 +420,9 @@ struct MaintenanceView: View {
                                 MaintenanceTaskRow(
                                     task: item.task,
                                     status: item.status,
-                                    isRunningAll: manager.isRunningAll
-                                ) {
-                                    manager.runTask(at: index)
-                                }
+                                    isSelected: $manager.tasks[index].isSelected,
+                                    isRunning: manager.isRunningAll
+                                )
                             }
                         }
                     } header: {
@@ -382,10 +435,9 @@ struct MaintenanceView: View {
                                 MaintenanceTaskRow(
                                     task: item.task,
                                     status: item.status,
-                                    isRunningAll: manager.isRunningAll
-                                ) {
-                                    manager.runTask(at: index)
-                                }
+                                    isSelected: $manager.tasks[index].isSelected,
+                                    isRunning: manager.isRunningAll
+                                )
                             }
                         }
                     } header: {
@@ -393,18 +445,14 @@ struct MaintenanceView: View {
                     }
 
                     Section {
-                        // Estimated space card
-                        spaceEstimateCard
-
                         ForEach(Array(manager.tasks.enumerated()), id: \.element.task.id) { index, item in
                             if isSpaceRecoveryTask(item.task) {
                                 MaintenanceTaskRow(
                                     task: item.task,
                                     status: item.status,
-                                    isRunningAll: manager.isRunningAll
-                                ) {
-                                    manager.runTask(at: index)
-                                }
+                                    isSelected: $manager.tasks[index].isSelected,
+                                    isRunning: manager.isRunningAll
+                                )
                             }
                         }
                     } header: {
@@ -414,73 +462,21 @@ struct MaintenanceView: View {
                 .padding()
             }
         }
+        .alert("Run Maintenance Tasks?", isPresented: $showRunConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Run \(manager.selectedCount) Task\(manager.selectedCount == 1 ? "" : "s")", role: .destructive) {
+                manager.runSelected()
+            }
+        } message: {
+            let selected = manager.tasks.filter(\.isSelected)
+            let names = selected.map(\.task.name).joined(separator: ", ")
+            let hasAdmin = selected.contains(where: \.task.requiresAdmin)
+            Text("\(names)\(hasAdmin ? "\n\nSome tasks require your admin password." : "")")
+        }
     }
 
     private func isSpaceRecoveryTask(_ task: MaintenanceTask) -> Bool {
         task.name == "Clear Time Machine Snapshots" || task.name == "Free APFS Purgeable Space"
-    }
-
-    private var spaceEstimateCard: some View {
-        HStack(spacing: 16) {
-            if manager.isEstimating {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Estimating reclaimable space...")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Image(systemName: "chart.bar.fill")
-                    .font(.title3)
-                    .foregroundStyle(.teal)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Estimated Reclaimable")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    let hasAnything = manager.tmSnapshotCount > 0 || manager.purgeableSpace > 0 || manager.spotlightSize > 0
-                    if hasAnything {
-                        VStack(alignment: .leading, spacing: 3) {
-                            if manager.tmSnapshotCount > 0 {
-                                Label("\(manager.tmSnapshotCount) TM snapshot\(manager.tmSnapshotCount == 1 ? "" : "s") (~\(CleanupManager.formatBytes(manager.tmSnapshotSize)))", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
-                                    .font(.caption)
-                                    .foregroundStyle(.teal)
-                            }
-                            if manager.purgeableSpace > 0 {
-                                Label("Purgeable: \(CleanupManager.formatBytes(manager.purgeableSpace))", systemImage: "externaldrive.badge.minus")
-                                    .font(.caption)
-                                    .foregroundStyle(.cyan)
-                            }
-                            if manager.spotlightSize > 0 {
-                                Label("Spotlight index: ~\(CleanupManager.formatBytes(manager.spotlightSize)) (rebuilt on reindex)", systemImage: "magnifyingglass")
-                                    .font(.caption)
-                                    .foregroundStyle(.blue)
-                            }
-                        }
-                    } else {
-                        Text("No reclaimable snapshots or purgeable space found")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Spacer()
-
-                Button {
-                    manager.estimateReclaimableSpace()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Refresh estimate")
-            }
-        }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 12)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-        .cornerRadius(8)
     }
 
     private func sectionHeader(_ title: String, subtitle: String) -> some View {
@@ -504,11 +500,19 @@ struct MaintenanceView: View {
 struct MaintenanceTaskRow: View {
     let task: MaintenanceTask
     let status: MaintenanceTask.Status
-    let isRunningAll: Bool
-    let action: () -> Void
+    @Binding var isSelected: Bool
+    let isRunning: Bool
 
     var body: some View {
         HStack(spacing: 12) {
+            // Checkbox for selection (hide during/after run)
+            if status == .idle {
+                Toggle("", isOn: $isSelected)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .disabled(isRunning)
+            }
+
             Image(systemName: task.icon)
                 .font(.title3)
                 .foregroundStyle(task.iconColor)
@@ -522,6 +526,15 @@ struct MaintenanceTaskRow: View {
                         Image(systemName: "lock.shield")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                    }
+                    if let estimate = task.estimate {
+                        Text(estimate)
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                            .foregroundStyle(task.iconColor)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(task.iconColor.opacity(0.12)))
                     }
                 }
                 Text(task.description)
@@ -551,13 +564,10 @@ struct MaintenanceTaskRow: View {
 
             Spacer()
 
-            // Status / Action
+            // Status indicator
             switch status {
             case .idle:
-                Button("Run") { action() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isRunningAll)
+                EmptyView()
             case .running:
                 ProgressView()
                     .controlSize(.small)

@@ -14,7 +14,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 - **ui**: Animated stat counters, disk bar transitions, hover effects, section transitions (P6)
 - **maintenance**: Clear Time Machine Snapshots task with admin escalation
 - **maintenance**: Free APFS Purgeable Space task with defragmentation
-- **maintenance**: Estimated Reclaimable space card showing TM snapshots, purgeable space, and Spotlight index size
+- **maintenance**: Per-task estimate badges (TM snapshots, purgeable space, Spotlight index size)
+- **maintenance**: Task selection with checkboxes, "Run Selected" button, and confirmation dialog
 
 ### Changed
 - **ui**: Removed unused Filter search bar from sidebar
