@@ -1160,6 +1160,17 @@ struct WhatsNewView: View {
     @Environment(\.dismiss) private var dismiss
 
     private let releases: [ReleaseNote] = [
+        ReleaseNote(version: "1.3.0", date: "April 2026", notes: [
+            "New Privacy category — scan and clean Recent Items, Spotlight History, Shell History, Safari/Chrome/Firefox browsing data, and cookies",
+            "Admin privilege escalation — clean root-owned files, uninstall system apps (e.g., Microsoft Office), and Trash Monitor cleanup",
+            "Maintenance: Clear Time Machine Snapshots and Free APFS Purgeable Space tasks with size estimates",
+            "Maintenance: Task selection with checkboxes, Run Selected button, and confirmation dialog",
+            "Animated stat counters, disk bar transitions, hover effects, and section transitions",
+            "Show in Finder icon in Uninstaller app detail header",
+            "Fixed pipe deadlock when CLI command output exceeds 64KB",
+            "Fixed DuplicateFinder memory leak and added scan cancellation support",
+            "Fixed disk usage bar visual gap between segments",
+        ]),
         ReleaseNote(version: "1.2.1", date: "April 2026", notes: [
             "Check for Updates — verify your version from Settings > About or Support menu",
             "Optional auto-update check on launch (Settings > Startup, off by default)",

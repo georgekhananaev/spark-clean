@@ -4,6 +4,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-04-02
+
 ### Added
 - **cleanup**: Privacy category with 7 scan definitions — Recent Items, Spotlight History, Shell History, Safari History, Chrome History (multi-profile), Firefox Form History, Browser Cookies
 - **cleanup**: Admin privilege escalation for root-owned files in main clean pipeline (macOS password dialog)
