@@ -396,10 +396,42 @@ struct TrashLeftoverSheet: View {
         isCleaning = true
         Task.detached(priority: .userInitiated) {
             let fm = FileManager.default
+            var failedPaths: [String] = []
+
             for item in detected.leftovers {
                 let url = URL(fileURLWithPath: item.path)
-                try? fm.trashItem(at: url, resultingItemURL: nil)
+                if (try? fm.trashItem(at: url, resultingItemURL: nil)) == nil {
+                    failedPaths.append(item.path)
+                }
             }
+
+            // Escalate failed paths via admin privileges
+            if !failedPaths.isEmpty {
+                let trashDir = NSHomeDirectory() + "/.Trash"
+                let tempScript = NSTemporaryDirectory() + "sparkclean_leftover_\(ProcessInfo.processInfo.processIdentifier).sh"
+                var script = "#!/bin/bash\nset -e\n"
+                for path in failedPaths {
+                    let escaped = path.replacingOccurrences(of: "'", with: "'\\''")
+                    let name = (path as NSString).lastPathComponent.replacingOccurrences(of: "'", with: "'\\''")
+                    let trashEscaped = trashDir.replacingOccurrences(of: "'", with: "'\\''")
+                    script += "dest='\(trashEscaped)/\(name)'; "
+                    script += "if [ -e \"$dest\" ]; then i=2; while [ -e \"$dest $i\" ]; do i=$((i+1)); done; dest=\"$dest $i\"; fi; "
+                    script += "/bin/mv '\(escaped)' \"$dest\"\n"
+                }
+                try? script.write(toFile: tempScript, atomically: true, encoding: .utf8)
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tempScript)
+
+                let escapedScript = tempScript.replacingOccurrences(of: "'", with: "'\\''")
+                let appleScriptSource = "do shell script \"'\(escapedScript)'\" with administrator privileges"
+
+                await MainActor.run {
+                    var error: NSDictionary?
+                    let appleScript = NSAppleScript(source: appleScriptSource)
+                    appleScript?.executeAndReturnError(&error)
+                }
+                try? fm.removeItem(atPath: tempScript)
+            }
+
             await MainActor.run {
                 cleaned = true
                 isCleaning = false

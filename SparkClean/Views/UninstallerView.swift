@@ -362,6 +362,7 @@ class UninstallerManager {
             DispatchQueue.global(qos: .userInitiated).async {
                 let fm = FileManager.default
                 var success = true
+                var needsAdminPaths: [String] = []
 
                 // Remove only selected related data
                 for related in app.relatedPaths where related.isSelected {
@@ -373,7 +374,7 @@ class UninstallerManager {
                     let url = URL(fileURLWithPath: related.path)
                     if trashOnly {
                         if (try? fm.trashItem(at: url, resultingItemURL: nil)) == nil {
-                            success = false
+                            needsAdminPaths.append(related.path)
                         }
                     } else {
                         do { try fm.removeItem(at: url) } catch { success = false }
@@ -384,10 +385,45 @@ class UninstallerManager {
                 let appURL = URL(fileURLWithPath: app.path)
                 if trashOnly {
                     if (try? fm.trashItem(at: appURL, resultingItemURL: nil)) == nil {
-                        success = false
+                        needsAdminPaths.append(app.path)
                     }
                 } else {
                     do { try fm.removeItem(at: appURL) } catch { success = false }
+                }
+
+                // Escalate to admin privileges for paths that failed normal trashItem
+                if !needsAdminPaths.isEmpty && trashOnly {
+                    let trashDir = NSHomeDirectory() + "/.Trash"
+                    let tempScript = NSTemporaryDirectory() + "sparkclean_uninstall_\(ProcessInfo.processInfo.processIdentifier).sh"
+                    var script = "#!/bin/bash\nset -e\n"
+                    for path in needsAdminPaths {
+                        let escaped = path.replacingOccurrences(of: "'", with: "'\\''")
+                        let name = (path as NSString).lastPathComponent.replacingOccurrences(of: "'", with: "'\\''")
+                        let trashEscaped = trashDir.replacingOccurrences(of: "'", with: "'\\''")
+                        script += """
+                        dest='\(trashEscaped)/\(name)'
+                        if [ -e "$dest" ]; then
+                            i=2; while [ -e "$dest $i" ]; do i=$((i+1)); done; dest="$dest $i"
+                        fi
+                        /bin/mv '\(escaped)' "$dest"\n
+                        """
+                    }
+                    try? script.write(toFile: tempScript, atomically: true, encoding: .utf8)
+                    try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tempScript)
+
+                    let escapedScript = tempScript.replacingOccurrences(of: "'", with: "'\\''")
+                    let appleScriptSource = "do shell script \"'\(escapedScript)'\" with administrator privileges"
+
+                    // NSAppleScript must run on the main thread
+                    DispatchQueue.main.sync {
+                        var error: NSDictionary?
+                        let appleScript = NSAppleScript(source: appleScriptSource)
+                        appleScript?.executeAndReturnError(&error)
+                        if error != nil {
+                            success = false
+                        }
+                    }
+                    try? fm.removeItem(atPath: tempScript)
                 }
 
                 continuation.resume(returning: success)
@@ -510,6 +546,7 @@ struct UninstallerView: View {
     @State private var appToUninstall: AppInfo? = nil
     @State private var showExportSheet = false
     @State private var isUninstalling = false
+    @State private var uninstallError: String? = nil
     @State private var exportReport = ""
     @State private var isGeneratingReport = false
     @State private var lastUninstalledApp: String? = nil
@@ -587,13 +624,14 @@ struct UninstallerView: View {
                             selectedApp = nil
                             uninstaller.apps.removeAll(where: { $0.id == app.id })
                             lastUninstalledApp = app.name
-                            // Auto-dismiss the banner after 5 seconds
                             Task {
                                 try? await Task.sleep(for: .seconds(5))
                                 if lastUninstalledApp == app.name {
                                     lastUninstalledApp = nil
                                 }
                             }
+                        } else {
+                            uninstallError = "Could not move \"\(app.name)\" to Trash. You may have cancelled the admin prompt, or the app is in use. Try quitting the app first and trying again."
                         }
                         isUninstalling = false
                     }
@@ -606,6 +644,14 @@ struct UninstallerView: View {
         }
         .sheet(isPresented: $showExportSheet) {
             ExportReportView(report: $exportReport, isGenerating: $isGeneratingReport)
+        }
+        .alert("Uninstall Failed", isPresented: Binding(
+            get: { uninstallError != nil },
+            set: { if !$0 { uninstallError = nil } }
+        )) {
+            Button("OK", role: .cancel) { uninstallError = nil }
+        } message: {
+            Text(uninstallError ?? "")
         }
     }
 
@@ -722,10 +768,22 @@ struct UninstallerView: View {
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
 
-                        Text(app.path)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Text(app.path)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+
+                            Button {
+                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: app.path)])
+                            } label: {
+                                Image(systemName: "arrow.right.circle")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Show in Finder")
+                        }
                     }
 
                     Spacer()

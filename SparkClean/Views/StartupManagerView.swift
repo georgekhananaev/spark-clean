@@ -125,13 +125,17 @@ class StartupManager {
 
         // Run launchctl on background thread to avoid blocking UI
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result: String?
             if shouldDisable {
-                let _ = CleanupManager.runCommand("/bin/launchctl", arguments: ["bootout", "gui/\(uid)", plistPath])
+                result = CleanupManager.runCommand("/bin/launchctl", arguments: ["bootout", "gui/\(uid)", plistPath])
             } else {
-                let _ = CleanupManager.runCommand("/bin/launchctl", arguments: ["bootstrap", "gui/\(uid)", plistPath])
+                result = CleanupManager.runCommand("/bin/launchctl", arguments: ["bootstrap", "gui/\(uid)", plistPath])
             }
             DispatchQueue.main.async {
-                self?.items[index].isEnabled = !shouldDisable
+                // Only update toggle if launchctl succeeded (non-nil result means exit code 0)
+                if result != nil {
+                    self?.items[index].isEnabled = !shouldDisable
+                }
             }
         }
     }
@@ -203,7 +207,7 @@ class StartupManager {
     }
 
     private static func loadAppIcons() -> [(String, NSImage)] {
-        var icons: [(String, NSImage)] = []
+        var appPaths: [(String, String)] = [] // (bundleID, path)
         let fm = FileManager.default
         for dir in ["/Applications", "\(NSHomeDirectory())/Applications"] {
             guard let contents = try? fm.contentsOfDirectory(
@@ -214,10 +218,16 @@ class StartupManager {
             for url in contents where url.pathExtension == "app" {
                 autoreleasepool {
                     if let bundle = Bundle(url: url), let id = bundle.bundleIdentifier {
-                        let icon = NSWorkspace.shared.icon(forFile: url.path)
-                        icons.append((id, icon))
+                        appPaths.append((id, url.path))
                     }
                 }
+            }
+        }
+        // NSWorkspace.shared.icon must be called on the main thread
+        var icons: [(String, NSImage)] = []
+        DispatchQueue.main.sync {
+            for (id, path) in appPaths {
+                icons.append((id, NSWorkspace.shared.icon(forFile: path)))
             }
         }
         return icons

@@ -9,6 +9,7 @@ import SwiftUI
 import AppKit
 import CryptoKit
 import ImageIO
+import os
 
 // MARK: - Duplicate Group Model
 
@@ -52,6 +53,11 @@ class DuplicateFinderManager {
     var totalWastedSpace: Int64 = 0
     var searchQuery = ""
     var scanStats = ""
+    private let cancelLock = OSAllocatedUnfairLock(initialState: false)
+    var cancelRequested: Bool {
+        get { cancelLock.withLock { $0 } }
+        set { cancelLock.withLock { $0 = newValue } }
+    }
 
     var filteredGroups: [DuplicateGroup] {
         if searchQuery.isEmpty {
@@ -72,15 +78,21 @@ class DuplicateFinderManager {
 
     // MARK: - Scan Duplicates
 
+    func cancelScan() {
+        cancelRequested = true
+    }
+
     func scanDuplicates() {
         isScanning = true
         scanComplete = false
         duplicateGroups = []
         totalWastedSpace = 0
         scanProgress = 0
+        cancelRequested = false
         currentScanItem = "Preparing scan..."
 
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
             let fm = FileManager.default
             let home = NSHomeDirectory()
             var dirs = [
