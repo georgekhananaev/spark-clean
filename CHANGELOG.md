@@ -5,10 +5,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 ## [Unreleased]
 
 ### Added
+- **cleanup**: Privacy category with 7 scan definitions — Recent Items, Spotlight History, Shell History, Safari History, Chrome History (multi-profile), Firefox Form History, Browser Cookies
+- **cleanup**: Admin privilege escalation for root-owned files in main clean pipeline (macOS password dialog)
+- **uninstaller**: Admin privilege escalation for uninstalling root-owned apps (e.g., Microsoft Office)
+- **uninstaller**: Show in Finder icon in app detail header
+- **uninstaller**: Error alert when uninstall fails
+- **app**: Admin escalation for Trash Monitor leftover cleanup
+- **ui**: Animated stat counters, disk bar transitions, hover effects, section transitions (P6)
 
 ### Changed
+- **ui**: Removed unused Filter search bar from sidebar
+- **cleanup**: `~/Library/Safari` added to protected paths blocklist
+- **cleanup**: Static `ISO8601DateFormatter` replacing per-call allocation
 
 ### Fixed
+- **cleanup**: `directorySizeSync` and `directorySizeSyncExcluding` now handle individual files (was silently returning 0 for non-directory paths like shell history files)
+- **cleanup**: `runCommand` pipe deadlock — reads data before `waitUntilExit` to prevent hang when output exceeds 64KB
+- **ui**: DuplicateFinderManager strong self capture replaced with `[weak self]` to prevent memory leak during long scans
+- **ui**: DuplicateFinderManager now supports scan cancellation via `cancelRequested` flag
+- **ui**: StartupManager `launchctl` toggle only updates UI if command actually succeeded
+- **ui**: StartupManager `NSWorkspace.shared.icon` moved to main thread to prevent potential crash
 
 ## [1.2.1] - 2026-04-01
 
