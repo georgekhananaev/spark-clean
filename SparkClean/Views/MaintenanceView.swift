@@ -33,9 +33,102 @@ struct MaintenanceTask: Identifiable {
 class MaintenanceManager {
     var tasks: [(task: MaintenanceTask, status: MaintenanceTask.Status)] = []
     var isRunningAll = false
+    var tmSnapshotCount: Int = 0
+    var tmSnapshotSize: Int64 = 0
+    var purgeableSpace: Int64 = 0
+    var spotlightSize: Int64 = 0
+    var isEstimating = false
+    var containerDisk: String = "disk3"
 
     init() {
         setupTasks()
+        estimateReclaimableSpace()
+    }
+
+    func estimateReclaimableSpace() {
+        isEstimating = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var snapshotCount = 0
+            var snapshotBytes: Int64 = 0
+            var purgeable: Int64 = 0
+            var diskID = "disk3"
+
+            // Get container disk identifier
+            if let output = CleanupManager.runCommand("/usr/sbin/diskutil", arguments: ["info", "/"]) {
+                for line in output.components(separatedBy: "\n") {
+                    if line.contains("Part of Whole:") {
+                        let parts = line.components(separatedBy: ":").last?.trimmingCharacters(in: .whitespaces) ?? ""
+                        if !parts.isEmpty { diskID = parts }
+                    }
+                }
+            }
+
+            // Parse APFS purgeable space (NOT free space — only actual purgeable data)
+            if let output = CleanupManager.runCommand("/usr/sbin/diskutil", arguments: ["apfs", "list"]) {
+                for line in output.components(separatedBy: "\n") {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.contains("Purgeable") && !trimmed.contains("0 Bytes") && !trimmed.contains("0 B") {
+                        if let range = trimmed.range(of: #"\((\d+) Bytes\)"#, options: .regularExpression) {
+                            let digits = String(trimmed[range]).filter(\.isNumber)
+                            if let bytes = Int64(digits), bytes > 0 {
+                                purgeable = max(purgeable, bytes)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Count Time Machine local snapshots
+            if let output = CleanupManager.runCommand("/usr/bin/tmutil", arguments: ["listlocalsnapshots", "/"]) {
+                let snapshots = output.components(separatedBy: "\n").filter { $0.contains("com.apple.TimeMachine") }
+                snapshotCount = snapshots.count
+            }
+
+            // Get actual snapshot disk usage
+            if snapshotCount > 0 {
+                if let output = CleanupManager.runCommand("/usr/sbin/diskutil", arguments: ["apfs", "listSnapshots", diskID + "s1"]) {
+                    for line in output.components(separatedBy: "\n") {
+                        let trimmed = line.trimmingCharacters(in: .whitespaces)
+                        if trimmed.contains("Snapshot Disk Size") || trimmed.contains("Used by Snapshots") {
+                            if let range = trimmed.range(of: #"\((\d+) Bytes\)"#, options: .regularExpression) {
+                                let digits = String(trimmed[range]).filter(\.isNumber)
+                                if let bytes = Int64(digits), bytes > snapshotBytes {
+                                    snapshotBytes = bytes
+                                }
+                            }
+                        }
+                    }
+                }
+                // Fallback estimate if parsing failed
+                if snapshotBytes == 0 {
+                    snapshotBytes = Int64(snapshotCount) * 2_000_000_000
+                }
+            }
+
+            // Estimate Spotlight index size (~0.5% of used space, typically 1-5 GB)
+            var spotlightEst: Int64 = 0
+            if let output = CleanupManager.runCommand("/usr/sbin/diskutil", arguments: ["info", "/"]) {
+                for line in output.components(separatedBy: "\n") {
+                    if line.contains("Capacity In Use") || line.contains("Used Space") {
+                        if let range = line.range(of: #"\d+ B "#, options: .regularExpression) {
+                            let digits = String(line[range]).filter(\.isNumber)
+                            if let usedBytes = Int64(digits), usedBytes > 0 {
+                                spotlightEst = usedBytes / 200 // ~0.5% of used space
+                            }
+                        }
+                    }
+                }
+            }
+
+            DispatchQueue.main.async {
+                self?.tmSnapshotCount = snapshotCount
+                self?.tmSnapshotSize = snapshotBytes
+                self?.purgeableSpace = purgeable
+                self?.spotlightSize = spotlightEst
+                self?.containerDisk = diskID
+                self?.isEstimating = false
+            }
+        }
     }
 
     private func setupTasks() {
@@ -67,10 +160,9 @@ class MaintenanceManager {
                 icon: "arrow.up.doc", iconColor: .orange, requiresAdmin: false, warning: nil,
                 command: {
                     let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-                    let r = CleanupManager.runCommand(lsregister, arguments: ["-gc"])
-                    // Also restart Finder to apply
-                    CleanupManager.runCommand("/usr/bin/killall", arguments: ["Finder"])
-                    return (true, r ?? "Launch Services database compacted")
+                    _ = CleanupManager.runCommand(lsregister, arguments: ["-gc"])
+                    _ = CleanupManager.runCommand("/usr/bin/killall", arguments: ["Finder"])
+                    return (true, "Launch Services compacted, Finder restarted")
                 }
             ), status: .idle),
 
@@ -116,6 +208,66 @@ class MaintenanceManager {
                     return (true, "Spotlight reindex started — will complete in the background")
                 }
             ), status: .idle),
+
+            (task: MaintenanceTask(
+                name: "Clear Time Machine Snapshots",
+                description: "Removes local Time Machine snapshots — can reclaim massive space",
+                icon: "clock.arrow.trianglehead.counterclockwise.rotate.90", iconColor: .teal, requiresAdmin: true,
+                warning: "This removes ALL local snapshots. Your Time Machine backups on external drives are not affected.",
+                command: {
+                    // First check how many snapshots exist
+                    let before = CleanupManager.runCommand("/usr/bin/tmutil", arguments: ["listlocalsnapshots", "/"])
+                    let countBefore = before?.components(separatedBy: "\n").filter { $0.contains("com.apple.TimeMachine") }.count ?? 0
+
+                    if countBefore == 0 {
+                        return (true, "No local snapshots found — nothing to clear")
+                    }
+
+                    let script = "do shell script \"/usr/bin/tmutil thinlocalsnapshots / 9999999999 1\" with administrator privileges"
+                    var error: NSDictionary?
+                    let result = NSAppleScript(source: script)?.executeAndReturnError(&error)
+                    if let error {
+                        return (false, error["NSAppleScriptErrorMessage"] as? String ?? "Failed — admin password required")
+                    }
+
+                    let output = result?.stringValue ?? ""
+                    // Check how many remain
+                    let after = CleanupManager.runCommand("/usr/bin/tmutil", arguments: ["listlocalsnapshots", "/"])
+                    let countAfter = after?.components(separatedBy: "\n").filter { $0.contains("com.apple.TimeMachine") }.count ?? 0
+                    let removed = countBefore - countAfter
+
+                    if removed > 0 {
+                        return (true, "Removed \(removed) snapshot\(removed == 1 ? "" : "s"). \(output)")
+                    }
+                    return (true, output.isEmpty ? "Snapshots thinned successfully" : output)
+                }
+            ), status: .idle),
+
+            (task: MaintenanceTask(
+                name: "Free APFS Purgeable Space",
+                description: "Enables APFS defragmentation to reclaim fragmented disk space",
+                icon: "externaldrive.badge.minus", iconColor: .cyan, requiresAdmin: true,
+                warning: "Defragmentation runs in the background. Space is reclaimed gradually.",
+                command: { [weak self] in
+                    let diskID = self?.containerDisk ?? "disk3"
+
+                    // Check current status first
+                    let status = CleanupManager.runCommand("/usr/sbin/diskutil", arguments: ["apfs", "defragment", diskID, "status"])
+                    let alreadyEnabled = status?.contains("enabled") ?? false
+
+                    if alreadyEnabled {
+                        return (true, "APFS defragmentation is already enabled and running in the background")
+                    }
+
+                    let script = "do shell script \"/usr/sbin/diskutil apfs defragment \(diskID) enable\" with administrator privileges"
+                    var error: NSDictionary?
+                    NSAppleScript(source: script)?.executeAndReturnError(&error)
+                    if let error {
+                        return (false, error["NSAppleScriptErrorMessage"] as? String ?? "Failed — admin password required")
+                    }
+                    return (true, "APFS defragmentation enabled — space will be reclaimed in the background")
+                }
+            ), status: .idle),
         ]
     }
 
@@ -123,20 +275,23 @@ class MaintenanceManager {
         guard index < tasks.count else { return }
         tasks[index].status = .running
         let command = tasks[index].task.command
+        let isSpaceRecovery = tasks[index].task.name == "Clear Time Machine Snapshots" ||
+                              tasks[index].task.name == "Free APFS Purgeable Space"
 
         // Run on background thread for non-blocking tasks,
         // but NSAppleScript must run on main thread for admin tasks
         if tasks[index].task.requiresAdmin {
-            // Admin tasks use NSAppleScript which is NOT thread-safe
             Task { @MainActor [weak self] in
                 let (success, message) = command()
                 self?.tasks[index].status = success ? .success(message) : .failed(message)
+                if isSpaceRecovery && success { self?.estimateReclaimableSpace() }
             }
         } else {
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 let (success, message) = command()
                 DispatchQueue.main.async {
                     self?.tasks[index].status = success ? .success(message) : .failed(message)
+                    if isSpaceRecovery && success { self?.estimateReclaimableSpace() }
                 }
             }
         }
@@ -223,7 +378,7 @@ struct MaintenanceView: View {
 
                     Section {
                         ForEach(Array(manager.tasks.enumerated()), id: \.element.task.id) { index, item in
-                            if item.task.requiresAdmin {
+                            if item.task.requiresAdmin && !isSpaceRecoveryTask(item.task) {
                                 MaintenanceTaskRow(
                                     task: item.task,
                                     status: item.status,
@@ -236,10 +391,96 @@ struct MaintenanceView: View {
                     } header: {
                         sectionHeader("Admin Actions", subtitle: "Requires your password")
                     }
+
+                    Section {
+                        // Estimated space card
+                        spaceEstimateCard
+
+                        ForEach(Array(manager.tasks.enumerated()), id: \.element.task.id) { index, item in
+                            if isSpaceRecoveryTask(item.task) {
+                                MaintenanceTaskRow(
+                                    task: item.task,
+                                    status: item.status,
+                                    isRunningAll: manager.isRunningAll
+                                ) {
+                                    manager.runTask(at: index)
+                                }
+                            }
+                        }
+                    } header: {
+                        sectionHeader("Space Recovery", subtitle: "Reclaim hidden disk space")
+                    }
                 }
                 .padding()
             }
         }
+    }
+
+    private func isSpaceRecoveryTask(_ task: MaintenanceTask) -> Bool {
+        task.name == "Clear Time Machine Snapshots" || task.name == "Free APFS Purgeable Space"
+    }
+
+    private var spaceEstimateCard: some View {
+        HStack(spacing: 16) {
+            if manager.isEstimating {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Estimating reclaimable space...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Image(systemName: "chart.bar.fill")
+                    .font(.title3)
+                    .foregroundStyle(.teal)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Estimated Reclaimable")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    let hasAnything = manager.tmSnapshotCount > 0 || manager.purgeableSpace > 0 || manager.spotlightSize > 0
+                    if hasAnything {
+                        VStack(alignment: .leading, spacing: 3) {
+                            if manager.tmSnapshotCount > 0 {
+                                Label("\(manager.tmSnapshotCount) TM snapshot\(manager.tmSnapshotCount == 1 ? "" : "s") (~\(CleanupManager.formatBytes(manager.tmSnapshotSize)))", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                                    .font(.caption)
+                                    .foregroundStyle(.teal)
+                            }
+                            if manager.purgeableSpace > 0 {
+                                Label("Purgeable: \(CleanupManager.formatBytes(manager.purgeableSpace))", systemImage: "externaldrive.badge.minus")
+                                    .font(.caption)
+                                    .foregroundStyle(.cyan)
+                            }
+                            if manager.spotlightSize > 0 {
+                                Label("Spotlight index: ~\(CleanupManager.formatBytes(manager.spotlightSize)) (rebuilt on reindex)", systemImage: "magnifyingglass")
+                                    .font(.caption)
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                    } else {
+                        Text("No reclaimable snapshots or purgeable space found")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                Button {
+                    manager.estimateReclaimableSpace()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Refresh estimate")
+            }
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .cornerRadius(8)
     }
 
     private func sectionHeader(_ title: String, subtitle: String) -> some View {

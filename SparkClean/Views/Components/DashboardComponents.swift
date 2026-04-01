@@ -31,7 +31,7 @@ struct DiskUsageCardView: View {
 
                     HStack(spacing: 0) {
                         let usedNonReclaimable = max(0, disk.usedSpace - reclaimable)
-                        RoundedRectangle(cornerRadius: 6)
+                        Rectangle()
                             .fill(
                                 LinearGradient(
                                     colors: [.blue, .indigo],
@@ -42,7 +42,7 @@ struct DiskUsageCardView: View {
                             .frame(width: max(0, geo.size.width * CGFloat(usedNonReclaimable) / CGFloat(max(1, disk.totalSpace))))
 
                         if reclaimable > 0 {
-                            RoundedRectangle(cornerRadius: 0)
+                            Rectangle()
                                 .fill(
                                     LinearGradient(
                                         colors: [.orange, .red],
@@ -53,6 +53,7 @@ struct DiskUsageCardView: View {
                                 .frame(width: max(0, geo.size.width * CGFloat(reclaimable) / CGFloat(max(1, disk.totalSpace))))
                         }
                     }
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                     .animation(.easeInOut(duration: 0.5), value: reclaimable)
                 }
             }

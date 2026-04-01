@@ -12,6 +12,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 - **uninstaller**: Error alert when uninstall fails
 - **app**: Admin escalation for Trash Monitor leftover cleanup
 - **ui**: Animated stat counters, disk bar transitions, hover effects, section transitions (P6)
+- **maintenance**: Clear Time Machine Snapshots task with admin escalation
+- **maintenance**: Free APFS Purgeable Space task with defragmentation
+- **maintenance**: Estimated Reclaimable space card showing TM snapshots, purgeable space, and Spotlight index size
 
 ### Changed
 - **ui**: Removed unused Filter search bar from sidebar
@@ -22,6 +25,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/), [SemVer](https://semver
 - **cleanup**: `directorySizeSync` and `directorySizeSyncExcluding` now handle individual files (was silently returning 0 for non-directory paths like shell history files)
 - **cleanup**: `runCommand` pipe deadlock — reads data before `waitUntilExit` to prevent hang when output exceeds 64KB
 - **ui**: DuplicateFinderManager strong self capture replaced with `[weak self]` to prevent memory leak during long scans
+- **ui**: Disk usage bar visual gap fixed — segments now use clipShape instead of per-segment corner radius
 - **ui**: DuplicateFinderManager now supports scan cancellation via `cancelRequested` flag
 - **ui**: StartupManager `launchctl` toggle only updates UI if command actually succeeded
 - **ui**: StartupManager `NSWorkspace.shared.icon` moved to main thread to prevent potential crash
