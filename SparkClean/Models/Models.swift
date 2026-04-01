@@ -17,6 +17,7 @@ enum CategoryGroup: String, CaseIterable, Identifiable, Codable {
     case developer = "Developer Tools"
     case packageManagers = "Package Managers"
     case largeFiles = "Large Files"
+    case privacy = "Privacy"
     case docker = "Docker"
     case applications = "Applications"
 
@@ -30,6 +31,7 @@ enum CategoryGroup: String, CaseIterable, Identifiable, Codable {
         case .developer: "hammer"
         case .packageManagers: "shippingbox"
         case .largeFiles: "doc.fill"
+        case .privacy: "hand.raised"
         case .docker: "cube.box"
         case .applications: "app.badge.checkmark"
         }
@@ -43,6 +45,7 @@ enum CategoryGroup: String, CaseIterable, Identifiable, Codable {
         case .developer: .pink
         case .packageManagers: .green
         case .largeFiles: .yellow
+        case .privacy: .indigo
         case .docker: .cyan
         case .applications: .purple
         }

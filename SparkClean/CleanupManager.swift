@@ -115,6 +115,7 @@ class CleanupManager {
             "\(h)/Desktop", "\(h)/Documents", "\(h)/Downloads",
             "\(h)/Pictures", "\(h)/Movies", "\(h)/Music",
             "\(h)/Library", "\(h)/Library/Keychains",
+            "\(h)/Library/Safari",
             "\(h)/Library/Mail", "\(h)/Library/Preferences",
             "\(h)/Library/Application Support",
             "\(h)/Library/Accounts", "\(h)/Library/Cookies",
@@ -185,7 +186,7 @@ class CleanupManager {
         let fm = FileManager.default
         try? fm.createDirectory(atPath: logDir, withIntermediateDirectories: true)
 
-        let dateStr = ISO8601DateFormatter().string(from: Date())
+        let dateStr = Self.isoFormatter.string(from: Date())
         let logPath = "\(logDir)/cleanup-\(dateStr.replacingOccurrences(of: ":", with: "-")).log"
 
         var log = "SparkClean Deletion Log — \(dateStr)\n"
@@ -411,6 +412,102 @@ class CleanupManager {
             ["\(home)/Library/Caches/BraveSoftware/Brave-Browser",
              "\(home)/Library/Application Support/BraveSoftware/Brave-Browser/Default/Service Worker",
              "\(home)/Library/Application Support/BraveSoftware/Brave-Browser/Default/Code Cache"]
+        },
+
+        // ═══════════ PRIVACY (review/caution — user data) ═══════════
+
+        ScanDefinition(name: "Recent Items", icon: "clock.arrow.circlepath", color: .indigo,
+            description: "Finder recent items, recent documents, and recent servers lists",
+            group: .privacy, safetyLevel: .review, defaultSelected: false) {
+            ["\(home)/Library/Application Support/com.apple.sharedfilelist"]
+        },
+
+        ScanDefinition(name: "Spotlight History", icon: "magnifyingglass", color: .indigo,
+            description: "Spotlight search history and shortcuts — reveals what you've searched for",
+            group: .privacy, safetyLevel: .review, defaultSelected: false) {
+            ["\(home)/Library/Application Support/com.apple.spotlight.Shortcuts",
+             "\(home)/Library/Caches/com.apple.Spotlight"]
+        },
+
+        ScanDefinition(name: "Shell History", icon: "terminal", color: .indigo,
+            description: "Terminal command history — zsh, bash, Python, Node.js, Ruby REPL",
+            group: .privacy, safetyLevel: .review, defaultSelected: false) {
+            ["\(home)/.zsh_history",
+             "\(home)/.bash_history",
+             "\(home)/.python_history",
+             "\(home)/.node_repl_history",
+             "\(home)/.irb_history",
+             "\(home)/.lesshst",
+             "\(home)/.wget-hsts"]
+        },
+
+        ScanDefinition(name: "Safari History", icon: "safari", color: .indigo,
+            description: "Safari browsing history and recent tabs — close Safari first, cannot be undone",
+            group: .privacy, safetyLevel: .caution, defaultSelected: false) {
+            ["\(home)/Library/Safari/History.db",
+             "\(home)/Library/Safari/History.db-wal",
+             "\(home)/Library/Safari/History.db-shm",
+             "\(home)/Library/Safari/RecentlyClosedTabs.plist",
+             "\(home)/Library/Safari/LastSession.plist",
+             "\(home)/Library/Safari/Downloads.plist",
+             "\(home)/Library/Safari/TopSites.plist"]
+        },
+
+        ScanDefinition(name: "Chrome History", icon: "globe", color: .indigo,
+            description: "Chrome browsing history across all profiles — close Chrome first, cannot be undone",
+            group: .privacy, safetyLevel: .caution, defaultSelected: false) {
+            var paths = [
+                "\(home)/Library/Application Support/Google/Chrome/Default/History",
+                "\(home)/Library/Application Support/Google/Chrome/Default/History-journal",
+                "\(home)/Library/Application Support/Google/Chrome/Default/Visited Links",
+                "\(home)/Library/Application Support/Google/Chrome/Default/Top Sites",
+                "\(home)/Library/Application Support/Google/Chrome/Default/Top Sites-journal",
+            ]
+            let chromeAppSupport = "\(home)/Library/Application Support/Google/Chrome"
+            if let entries = try? FileManager.default.contentsOfDirectory(atPath: chromeAppSupport) {
+                for entry in entries where entry.hasPrefix("Profile ") {
+                    paths.append("\(chromeAppSupport)/\(entry)/History")
+                    paths.append("\(chromeAppSupport)/\(entry)/History-journal")
+                    paths.append("\(chromeAppSupport)/\(entry)/Visited Links")
+                    paths.append("\(chromeAppSupport)/\(entry)/Top Sites")
+                    paths.append("\(chromeAppSupport)/\(entry)/Top Sites-journal")
+                }
+            }
+            return paths
+        },
+
+        ScanDefinition(name: "Firefox Form History", icon: "flame", color: .indigo,
+            description: "Firefox form autofill data — close Firefox first, cannot be undone",
+            group: .privacy, safetyLevel: .caution, defaultSelected: false) {
+            var paths: [String] = []
+            let profilesDir = "\(home)/Library/Application Support/Firefox/Profiles"
+            if let profiles = try? FileManager.default.contentsOfDirectory(atPath: profilesDir) {
+                for profile in profiles {
+                    paths.append("\(profilesDir)/\(profile)/formhistory.sqlite")
+                    paths.append("\(profilesDir)/\(profile)/formhistory.sqlite-wal")
+                    paths.append("\(profilesDir)/\(profile)/formhistory.sqlite-shm")
+                }
+            }
+            return paths
+        },
+
+        ScanDefinition(name: "Browser Cookies", icon: "birthday.cake", color: .indigo,
+            description: "Safari and Chrome cookies — will log you out of all websites, cannot be undone",
+            group: .privacy, safetyLevel: .caution, defaultSelected: false) {
+            var paths = [
+                "\(home)/Library/Cookies/Cookies.binarycookies",
+                "\(home)/Library/Cookies/com.apple.Safari.cookies",
+                "\(home)/Library/Application Support/Google/Chrome/Default/Cookies",
+                "\(home)/Library/Application Support/Google/Chrome/Default/Cookies-journal",
+            ]
+            let chromeAppSupport = "\(home)/Library/Application Support/Google/Chrome"
+            if let entries = try? FileManager.default.contentsOfDirectory(atPath: chromeAppSupport) {
+                for entry in entries where entry.hasPrefix("Profile ") {
+                    paths.append("\(chromeAppSupport)/\(entry)/Cookies")
+                    paths.append("\(chromeAppSupport)/\(entry)/Cookies-journal")
+                }
+            }
+            return paths
         },
 
         // ═══════════ DEVELOPER (safe — build artifacts rebuild) ═══════════
@@ -1028,6 +1125,7 @@ class CleanupManager {
                     let fm = FileManager.default
                     var localErrors: [String] = []
                     var auditLog: [(path: String, size: Int64, trashedOrDeleted: String)] = []
+                    var needsAdminPaths: [String] = []
                     let uid = getuid()
 
                     func isOwnedByUser(_ path: String) -> Bool {
@@ -1043,10 +1141,6 @@ class CleanupManager {
                             localErrors.append("\(categoryName): Blocked deletion of protected path — \(url.lastPathComponent)")
                             return
                         }
-                        // Safety: skip files we don't own
-                        if !isOwnedByUser(path) && !fm.isDeletableFile(atPath: path) { return }
-                        // Skip files/dirs we can't delete
-                        if !fm.isDeletableFile(atPath: path) { return }
 
                         // Get size for audit log
                         let fileSize: Int64 = (try? fm.attributesOfItem(atPath: path))?[.size] as? Int64 ?? 0
@@ -1055,8 +1149,8 @@ class CleanupManager {
                             if (try? fm.trashItem(at: url, resultingItemURL: nil)) != nil {
                                 auditLog.append((path: path, size: fileSize, trashedOrDeleted: "TRASH"))
                             } else {
-                                // Trash failed — do NOT silently fall back to permanent delete
-                                localErrors.append("\(categoryName): Could not move to Trash — \(url.lastPathComponent)")
+                                // Trash failed — collect for admin escalation
+                                needsAdminPaths.append(path)
                             }
                         } else {
                             do {
@@ -1074,7 +1168,6 @@ class CleanupManager {
                             do {
                                 contents = try fm.contentsOfDirectory(atPath: path)
                             } catch {
-                                // Skip directories we can't read (permission denied)
                                 continue
                             }
                             for item in contents {
@@ -1088,6 +1181,42 @@ class CleanupManager {
                         for path in effectivePaths {
                             deleteItem(at: URL(fileURLWithPath: path))
                         }
+                    }
+
+                    // Escalate failed paths via admin privileges
+                    if !needsAdminPaths.isEmpty {
+                        let trashDir = NSHomeDirectory() + "/.Trash"
+                        let tempScript = NSTemporaryDirectory() + "sparkclean_clean_\(ProcessInfo.processInfo.processIdentifier).sh"
+                        var script = "#!/bin/bash\nset -e\n"
+                        for path in needsAdminPaths {
+                            let escaped = path.replacingOccurrences(of: "'", with: "'\\''")
+                            let name = (path as NSString).lastPathComponent.replacingOccurrences(of: "'", with: "'\\''")
+                            let trashEscaped = trashDir.replacingOccurrences(of: "'", with: "'\\''")
+                            script += "dest='\(trashEscaped)/\(name)'; "
+                            script += "if [ -e \"$dest\" ]; then i=2; while [ -e \"$dest $i\" ]; do i=$((i+1)); done; dest=\"$dest $i\"; fi; "
+                            script += "/bin/mv '\(escaped)' \"$dest\"\n"
+                        }
+                        try? script.write(toFile: tempScript, atomically: true, encoding: .utf8)
+                        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tempScript)
+
+                        let escapedScript = tempScript.replacingOccurrences(of: "'", with: "'\\''")
+                        let appleScriptSource = "do shell script \"'\(escapedScript)'\" with administrator privileges"
+
+                        DispatchQueue.main.sync {
+                            var error: NSDictionary?
+                            let appleScript = NSAppleScript(source: appleScriptSource)
+                            appleScript?.executeAndReturnError(&error)
+                            if error != nil {
+                                for p in needsAdminPaths {
+                                    localErrors.append("\(categoryName): Admin required — \((p as NSString).lastPathComponent)")
+                                }
+                            } else {
+                                for p in needsAdminPaths {
+                                    auditLog.append((path: p, size: 0, trashedOrDeleted: "TRASH(admin)"))
+                                }
+                            }
+                        }
+                        try? fm.removeItem(atPath: tempScript)
                     }
 
                     // Write deletion audit log
@@ -1159,6 +1288,16 @@ class CleanupManager {
         var totalSize: Int64 = 0
         var count = 0
 
+        // Handle individual files (not directories)
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue {
+            let url = URL(fileURLWithPath: path)
+            if let rv = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey]) {
+                return (Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0), 1)
+            }
+            return (0, 0)
+        }
+
         guard let enumerator = fm.enumerator(
             at: URL(fileURLWithPath: path),
             includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey, .isRegularFileKey],
@@ -1188,6 +1327,17 @@ class CleanupManager {
         let fm = FileManager.default
         var totalSize: Int64 = 0
         var count = 0
+
+        // Handle individual files (not directories)
+        var isDir: ObjCBool = false
+        if fm.fileExists(atPath: path, isDirectory: &isDir), !isDir.boolValue {
+            let url = URL(fileURLWithPath: path)
+            if let rv = try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey]) {
+                return (Int64(rv.totalFileAllocatedSize ?? rv.fileSize ?? 0), 1)
+            }
+            return (0, 0)
+        }
+
         let excludedWithSlash = excludedPaths.map { $0 + "/" }
 
         guard let enumerator = fm.enumerator(
@@ -2772,11 +2922,12 @@ class CleanupManager {
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutWorkItem)
 
+            // Read pipe data BEFORE waitUntilExit to prevent deadlock when output exceeds pipe buffer (~64KB)
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
             timeoutWorkItem.cancel()
 
             guard process.terminationStatus == 0 else { return nil }
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             return nil
@@ -2947,6 +3098,8 @@ class CleanupManager {
     }
 
     // MARK: - Formatting
+
+    private static let isoFormatter = ISO8601DateFormatter()
 
     private static let byteFormatter: ByteCountFormatter = {
         let f = ByteCountFormatter()
