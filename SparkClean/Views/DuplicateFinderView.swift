@@ -122,6 +122,7 @@ class DuplicateFinderManager {
             var totalImagesScanned = 0
 
             for (dirIndex, dir) in dirs.enumerated() where fm.fileExists(atPath: dir) {
+                if self.cancelRequested { break }
                 let dirName = (dir as NSString).lastPathComponent
                 let displayName = dir.contains(".photoslibrary") ? "Photos Library" : dirName
                 DispatchQueue.main.async {
@@ -185,6 +186,7 @@ class DuplicateFinderManager {
             var groupIndex = 0
 
             for (fileSize, entries) in sizeGroups {
+                if self.cancelRequested { break }
                 groupIndex += 1
 
                 if groupIndex % 10 == 0 {
@@ -241,6 +243,7 @@ class DuplicateFinderManager {
             let exactDupPaths = Set(results.flatMap(\.paths))
 
             // Phase 3: Find visually similar images
+            if !self.cancelRequested {
             DispatchQueue.main.async {
                 self.currentScanItem = "Scanning for similar images..."
                 self.scanProgress = 0.70
@@ -249,6 +252,7 @@ class DuplicateFinderManager {
             results.append(contentsOf: similarImages)
             for group in similarImages {
                 totalWasted += group.wastedSize
+            }
             }
 
             // Sort by wasted size descending

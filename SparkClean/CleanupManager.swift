@@ -2602,9 +2602,7 @@ class CleanupManager {
                             _deviceName = name
                         }
                         if let date = plist["Last Backup Date"] as? Date {
-                            let fmt = DateFormatter()
-                            fmt.dateStyle = .medium
-                            _deviceName += " (\(fmt.string(from: date)))"
+                            _deviceName += " (\(Self.mediumDateFormatter.string(from: date)))"
                         }
                     }
                     filePaths.append(full)
@@ -3111,6 +3109,12 @@ class CleanupManager {
     static func formatBytes(_ bytes: Int64) -> String {
         byteFormatter.string(fromByteCount: bytes)
     }
+
+    private static let mediumDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        return f
+    }()
 
     private static let spotlightDateFormatter: DateFormatter = {
         let f = DateFormatter()
