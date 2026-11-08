@@ -6,11 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # The app target sets SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor and
       # SWIFT_APPROACHABLE_CONCURRENCY, which require Xcode 26 / Swift 6.2+.
